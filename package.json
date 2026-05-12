@@ -1,0 +1,12 @@
+{
+  "name": "cleanify-reporting-agent",
+  "version": "1.0.0",
+  "description": "Backend Node.js para reportes SEO de Cleanify",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.3"
+  }
+}
