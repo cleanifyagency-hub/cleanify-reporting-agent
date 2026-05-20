@@ -1,4 +1,7 @@
-const express = require("express");
+import express from "express";
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 const app = express();
 
@@ -6,18 +9,6 @@ const PORT = process.env.PORT || 3000;
 const BASE_URL = "https://reportes.cleanify.agency";
 
 app.use(express.json({ limit: "2mb" }));
-
-app.get("/", (req, res) => {
-  res.send("Cleanify Reporting Agent funcionando ✅");
-});
-
-app.get("/health", (req, res) => {
-  res.json({
-    status: "ok",
-    service: "cleanify-reporting-agent",
-    version: "0.2.0"
-  });
-});
 
 function safeNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -188,6 +179,73 @@ function buildMonthlyReport(data) {
   };
 }
 
+function createMcpServer() {
+  const server = new McpServer({
+    name: "cleanify-reporting-agent",
+    version: "1.1.0"
+  });
+
+  server.registerTool(
+    "generateMonthlyReport",
+    {
+      title: "Generar informe mensual de cliente",
+      description: "Convierte datos mensuales de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas en una estructura de informe mensual clara para clientes de Cleanify.",
+      inputSchema: {
+        client: z.object({
+          name: z.string().describe("Nombre del cliente"),
+          sector: z.string().optional().describe("Sector del cliente"),
+          location: z.string().optional().describe("Ciudad, provincia o zona principal"),
+          priority_services: z.array(z.string()).optional().describe("Servicios prioritarios")
+        }),
+        period: z.object({
+          month: z.string().optional(),
+          previous_month: z.string().optional()
+        }).optional(),
+        ga4: z.record(z.any()).optional(),
+        search_console: z.record(z.any()).optional(),
+        google_business_profile: z.record(z.any()).optional(),
+        calls: z.record(z.any()).optional(),
+        forms: z.record(z.any()).optional(),
+        crm: z.record(z.any()).optional(),
+        tasks_done: z.array(z.string()).optional(),
+        next_month_actions: z.array(z.string()).optional(),
+        client_needs: z.array(z.string()).optional()
+      }
+    },
+    async (input) => {
+      const report = buildMonthlyReport(input);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(report, null, 2)
+          }
+        ],
+        structuredContent: report
+      };
+    }
+  );
+
+  return server;
+}
+
+app.get("/", (req, res) => {
+  res.send("Cleanify Reporting Agent funcionando ✅");
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "cleanify-reporting-agent",
+    version: "1.1.0",
+    mcp: {
+      enabled: true,
+      endpoint: `${BASE_URL}/mcp`
+    }
+  });
+});
+
 app.post("/api/report/monthly", (req, res) => {
   try {
     const data = req.body || {};
@@ -210,12 +268,43 @@ app.post("/api/report/monthly", (req, res) => {
   }
 });
 
+app.post("/mcp", async (req, res) => {
+  const server = createMcpServer();
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true
+  });
+
+  res.on("close", () => {
+    transport.close();
+  });
+
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("Error MCP:", error);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: "Internal server error"
+        },
+        id: null
+      });
+    }
+  }
+});
+
 app.get("/openapi.json", (req, res) => {
   res.json({
     openapi: "3.1.0",
     info: {
       title: "Cleanify Reporting Agent API",
-      version: "0.2.0",
+      version: "1.1.0",
       description: "API para convertir datos mensuales de marketing local en una estructura de informe para clientes de Cleanify."
     },
     servers: [
@@ -307,4 +396,5 @@ app.get("/openapi.json", (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Cleanify Reporting Agent escuchando en puerto ${PORT}`);
+  console.log(`MCP endpoint disponible en ${BASE_URL}/mcp`);
 });
