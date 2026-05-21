@@ -3,6 +3,7 @@ import {
   exchangeGoogleCodeForTokens,
   createAuthorizedGoogleClient
 } from "./google-auth.js";
+import { getSearchConsoleMonthlyData } from "./google-search-console.js";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -363,6 +364,41 @@ app.get("/google/test", async (req, res) => {
       google_connected: false,
       search_console_connected: false,
       error: "No se pudo conectar con Search Console usando el refresh token.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/search-console/monthly", async (req, res) => {
+  try {
+    const {
+      siteUrl,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate
+    } = req.query;
+
+    const data = await getSearchConsoleMonthlyData({
+      siteUrl,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate,
+      rowLimit: 10
+    });
+
+    return res.json({
+      ok: true,
+      source: "search_console",
+      data
+    });
+  } catch (error) {
+    console.error("Error consultando Search Console mensual:", error);
+    return res.status(500).json({
+      ok: false,
+      source: "search_console",
+      error: "No se pudo consultar Search Console.",
       details: error.message
     });
   }
