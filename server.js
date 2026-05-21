@@ -54,6 +54,137 @@ function compare(current, previous) {
   };
 }
 
+function buildSearchConsoleSignals(searchConsole) {
+  const signals = [];
+
+  const clicks = compare(searchConsole.clicks, searchConsole.previous_clicks);
+  const impressions = compare(searchConsole.impressions, searchConsole.previous_impressions);
+  const ctr = compare(searchConsole.ctr, searchConsole.previous_ctr);
+  const averagePosition = compare(
+    searchConsole.average_position,
+    searchConsole.previous_average_position
+  );
+
+  if (searchConsole.real_data_loaded) {
+    signals.push("Se han cargado datos reales de Google Search Console para este informe.");
+  }
+
+  if (clicks.trend === "sube") {
+    signals.push("Aumentan los clics orgánicos desde Google Search Console.");
+  }
+
+  if (impressions.trend === "sube") {
+    signals.push("Aumentan las impresiones, señal de mayor visibilidad en búsquedas.");
+  }
+
+  if (ctr.trend === "baja" && impressions.trend === "sube") {
+    signals.push(
+      "El CTR baja mientras suben las impresiones. Esto puede indicar que la web empieza a aparecer en más búsquedas, pero conviene optimizar titles, metadescriptions y páginas con muchas impresiones."
+    );
+  }
+
+  if (
+    averagePosition.current !== null &&
+    averagePosition.previous !== null &&
+    averagePosition.current > averagePosition.previous
+  ) {
+    signals.push(
+      "La posición media empeora. En Search Console, un número menor es mejor, así que conviene revisar consultas con visibilidad pero posiciones todavía mejorables."
+    );
+  }
+
+  if (
+    averagePosition.current !== null &&
+    averagePosition.previous !== null &&
+    averagePosition.current < averagePosition.previous
+  ) {
+    signals.push(
+      "La posición media mejora. En Search Console, un número menor es mejor."
+    );
+  }
+
+  const topQueries = Array.isArray(searchConsole.top_queries)
+    ? searchConsole.top_queries
+    : [];
+
+  if (topQueries.length > 0) {
+    const relevantQueries = topQueries
+      .slice(0, 5)
+      .map((query) => query.query)
+      .filter(Boolean);
+
+    if (relevantQueries.length > 0) {
+      signals.push(
+        `Las principales consultas detectadas son: ${relevantQueries.join(", ")}.`
+      );
+    }
+  }
+
+  return signals;
+}
+
+async function enrichInputWithSearchConsole(input) {
+  let enrichedInput = { ...input };
+
+  const searchConsoleInput = input.search_console || {};
+
+  const hasSearchConsoleRequest =
+    searchConsoleInput.siteUrl &&
+    searchConsoleInput.startDate &&
+    searchConsoleInput.endDate;
+
+  if (!hasSearchConsoleRequest) {
+    return enrichedInput;
+  }
+
+  try {
+    const realSearchConsoleData = await getSearchConsoleMonthlyData({
+      siteUrl: searchConsoleInput.siteUrl,
+      startDate: searchConsoleInput.startDate,
+      endDate: searchConsoleInput.endDate,
+      previousStartDate: searchConsoleInput.previousStartDate,
+      previousEndDate: searchConsoleInput.previousEndDate,
+      rowLimit: searchConsoleInput.rowLimit || 10
+    });
+
+    const summary = realSearchConsoleData.summary || {};
+
+    enrichedInput = {
+      ...input,
+      search_console: {
+        ...searchConsoleInput,
+        real_data_loaded: true,
+        source: "google_search_console",
+        siteUrl: realSearchConsoleData.siteUrl,
+        period: realSearchConsoleData.period,
+        clicks: summary.clicks,
+        previous_clicks: summary.previous_clicks,
+        impressions: summary.impressions,
+        previous_impressions: summary.previous_impressions,
+        ctr: summary.ctr,
+        previous_ctr: summary.previous_ctr,
+        average_position: summary.average_position,
+        previous_average_position: summary.previous_average_position,
+        top_queries: realSearchConsoleData.top_queries || [],
+        previous_top_queries: realSearchConsoleData.previous_top_queries || [],
+        raw_data: realSearchConsoleData
+      }
+    };
+
+    return enrichedInput;
+  } catch (error) {
+    return {
+      ...input,
+      search_console: {
+        ...searchConsoleInput,
+        real_data_loaded: false,
+        source: "google_search_console",
+        error: error.message
+      }
+    };
+  }
+}
+
 function buildMonthlyReport(data) {
   const client = data.client || {};
   const period = data.period || {};
@@ -73,16 +204,16 @@ function buildMonthlyReport(data) {
   const ga4Conversions = compare(ga4.conversions, ga4.previous_conversions);
   const scClicks = compare(searchConsole.clicks, searchConsole.previous_clicks);
   const scImpressions = compare(searchConsole.impressions, searchConsole.previous_impressions);
+  const scCtr = compare(searchConsole.ctr, searchConsole.previous_ctr);
+  const scAveragePosition = compare(
+    searchConsole.average_position,
+    searchConsole.previous_average_position
+  );
   const gbpCalls = compare(gbp.calls, gbp.previous_calls);
   const totalLeads = compare(crm.total_leads, crm.previous_total_leads);
 
-  if (scClicks.trend === "sube") {
-    signals.push("Aumentan los clics orgánicos desde Google Search Console.");
-  }
-
-  if (scImpressions.trend === "sube") {
-    signals.push("Aumentan las impresiones, señal de mayor visibilidad en búsquedas.");
-  }
+  const searchConsoleSignals = buildSearchConsoleSignals(searchConsole);
+  signals.push(...searchConsoleSignals);
 
   if (ga4Users.trend === "sube") {
     signals.push("Aumentan los usuarios en la web.");
@@ -101,12 +232,77 @@ function buildMonthlyReport(data) {
   }
 
   if (signals.length === 0) {
-    signals.push("Todavía no hay señales cuantitativas fuertes; el foco está en consolidar base técnica, medición y próximas acciones.");
+    signals.push(
+      "Todavía no hay señales cuantitativas fuertes; el foco está en consolidar base técnica, medición y próximas acciones."
+    );
   }
+
+  const missingDataBlocks = [];
+
+  if (!data.ga4) {
+    missingDataBlocks.push("No se han aportado datos de GA4.");
+  }
+
+  if (!data.google_business_profile) {
+    missingDataBlocks.push("No se han aportado datos de Google Business Profile.");
+  }
+
+  if (!data.calls) {
+    missingDataBlocks.push("No se han aportado datos de llamadas.");
+  }
+
+  if (!data.forms) {
+    missingDataBlocks.push("No se han aportado datos de formularios.");
+  }
+
+  if (!data.crm) {
+    missingDataBlocks.push("No se han aportado datos de CRM.");
+  }
+
+  if (searchConsole.siteUrl && searchConsole.real_data_loaded === false) {
+    missingDataBlocks.push(
+      `No se han podido cargar los datos reales de Search Console: ${searchConsole.error || "error no especificado"}.`
+    );
+  }
+
+  const topQueries = Array.isArray(searchConsole.top_queries)
+    ? searchConsole.top_queries
+    : [];
+
+  const searchConsoleOpportunities = topQueries
+    .filter((query) => {
+      const impressions = safeNumber(query.impressions) || 0;
+      const ctr = safeNumber(query.ctr);
+      const position = safeNumber(query.position);
+
+      return (
+        impressions >= 20 &&
+        (
+          ctr === null ||
+          ctr < 0.03 ||
+          (position !== null && position >= 5 && position <= 15)
+        )
+      );
+    })
+    .slice(0, 6)
+    .map((query) => ({
+      query: query.query,
+      clicks: query.clicks || 0,
+      impressions: query.impressions || 0,
+      ctr: query.ctr ?? null,
+      position: query.position ?? null,
+      suggested_action:
+        "Revisar title, metadescription, intención de búsqueda, contenido de la página asociada y enlazado interno."
+    }));
 
   return {
     ok: true,
     generated_at: new Date().toISOString(),
+    data_enrichment: {
+      search_console_real_data_loaded: searchConsole.real_data_loaded ?? false,
+      search_console_siteUrl: searchConsole.siteUrl || null,
+      missing_data_blocks: missingDataBlocks
+    },
     client: {
       name: client.name || "Cliente sin nombre",
       sector: client.sector || null,
@@ -124,10 +320,20 @@ function buildMonthlyReport(data) {
         conversions: ga4Conversions
       },
       search_console: {
+        real_data_loaded: searchConsole.real_data_loaded ?? false,
+        siteUrl: searchConsole.siteUrl || null,
         clicks: scClicks,
         impressions: scImpressions,
-        ctr: compare(searchConsole.ctr, searchConsole.previous_ctr),
-        average_position: compare(searchConsole.average_position, searchConsole.previous_average_position)
+        ctr: scCtr,
+        average_position: {
+          ...scAveragePosition,
+          note: "En posición media, un número menor es mejor."
+        },
+        top_queries: topQueries,
+        previous_top_queries: Array.isArray(searchConsole.previous_top_queries)
+          ? searchConsole.previous_top_queries
+          : [],
+        opportunities: searchConsoleOpportunities
       },
       google_business_profile: {
         calls: gbpCalls,
@@ -154,11 +360,30 @@ function buildMonthlyReport(data) {
         "En SEO local, los resultados suelen consolidarse de forma progresiva, especialmente cuando se crean nuevas páginas, se optimizan activos y se mejora la captación."
       ],
       senales_positivas: signals,
+      lectura_search_console: searchConsole.real_data_loaded
+        ? [
+            `Clics orgánicos: ${scClicks.current ?? "sin dato"} frente a ${scClicks.previous ?? "sin dato"} del periodo anterior.`,
+            `Impresiones: ${scImpressions.current ?? "sin dato"} frente a ${scImpressions.previous ?? "sin dato"} del periodo anterior.`,
+            `CTR: ${scCtr.current ?? "sin dato"} frente a ${scCtr.previous ?? "sin dato"} del periodo anterior.`,
+            `Posición media: ${scAveragePosition.current ?? "sin dato"} frente a ${scAveragePosition.previous ?? "sin dato"} del periodo anterior. En esta métrica, un número menor es mejor.`
+          ]
+        : [
+            "No se han cargado datos reales de Search Console para este informe."
+          ],
+      consultas_principales: topQueries.length
+        ? topQueries.slice(0, 10)
+        : ["No se han detectado consultas principales de Search Console."],
+      oportunidades_search_console: searchConsoleOpportunities.length
+        ? searchConsoleOpportunities
+        : ["No se han detectado oportunidades claras con los datos disponibles."],
       que_necesita_tiempo: [
         "La consolidación de rankings locales y la conversión estable de leads necesitan más histórico.",
         "Algunas mejoras pueden verse primero en impresiones, visibilidad o interacción antes de convertirse en llamadas o presupuestos.",
         "Conviene evitar conclusiones fuertes si el volumen de datos todavía es bajo."
       ],
+      datos_no_disponibles: missingDataBlocks.length
+        ? missingDataBlocks
+        : ["No se han detectado bloques de datos faltantes relevantes."],
       proximo_mes: nextActions.length
         ? nextActions
         : ["Revisar datos del mes, priorizar oportunidades y continuar optimizando las páginas y canales con mayor potencial."],
@@ -167,8 +392,11 @@ function buildMonthlyReport(data) {
         : ["Feedback sobre la calidad de los leads recibidos.", "Confirmación de servicios y zonas prioritarias."]
     },
     internal_summary_for_cleanify: {
-      lectura_real_del_mes: "Revisar si las señales positivas se corresponden con leads reales y oportunidades comerciales.",
+      lectura_real_del_mes: searchConsole.real_data_loaded
+        ? "Search Console se ha cargado correctamente. Revisar si el aumento de visibilidad se está convirtiendo en tráfico cualificado y oportunidades comerciales."
+        : "No se ha podido cargar Search Console dentro del informe. Revisar siteUrl, permisos y fechas.",
       riesgos_o_bloqueos: [
+        ...missingDataBlocks,
         "Datos incompletos o sin comparativa pueden limitar la lectura.",
         "Si hay llamadas perdidas o formularios poco cualificados, conviene revisarlo antes de prometer crecimiento."
       ],
@@ -176,6 +404,7 @@ function buildMonthlyReport(data) {
         "Calidad de leads.",
         "Llamadas perdidas.",
         "Páginas con muchas impresiones y pocos clics.",
+        "Consultas con posición media entre 5 y 15.",
         "Servicios o zonas con mejor conversión."
       ],
       que_debe_decir_account_manager: "Explicar el avance con calma: qué se ha construido, qué señales empiezan a verse y qué se priorizará el próximo mes.",
@@ -188,14 +417,15 @@ function buildMonthlyReport(data) {
 function createMcpServer() {
   const server = new McpServer({
     name: "cleanify-reporting-agent",
-    version: "1.1.0"
+    version: "1.2.0"
   });
 
   server.registerTool(
     "generateMonthlyReport",
     {
       title: "Generar informe mensual de cliente",
-      description: "Convierte datos mensuales de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas en una estructura de informe mensual clara para clientes de Cleanify.",
+      description:
+        "Genera un informe mensual para clientes de Cleanify. Si search_console incluye siteUrl, startDate y endDate, esta herramienta consulta datos reales de Google Search Console antes de generar el informe.",
       inputSchema: {
         client: z.object({
           name: z.string().describe("Nombre del cliente"),
@@ -208,7 +438,9 @@ function createMcpServer() {
           previous_month: z.string().optional()
         }).optional(),
         ga4: z.record(z.any()).optional(),
-        search_console: z.record(z.any()).optional(),
+        search_console: z.record(z.any()).optional().describe(
+          "Puede incluir datos manuales o una petición de datos reales con siteUrl, startDate, endDate, previousStartDate y previousEndDate."
+        ),
         google_business_profile: z.record(z.any()).optional(),
         calls: z.record(z.any()).optional(),
         forms: z.record(z.any()).optional(),
@@ -219,7 +451,8 @@ function createMcpServer() {
       }
     },
     async (input) => {
-      const report = buildMonthlyReport(input);
+      const enrichedInput = await enrichInputWithSearchConsole(input);
+      const report = buildMonthlyReport(enrichedInput);
 
       return {
         content: [
@@ -237,7 +470,8 @@ function createMcpServer() {
     "getSearchConsoleMonthlyData",
     {
       title: "Obtener datos mensuales de Search Console",
-      description: "Consulta datos reales de Google Search Console para un sitio y rango de fechas. Devuelve clics, impresiones, CTR, posición media y principales consultas.",
+      description:
+        "Consulta datos reales de Google Search Console para un sitio y rango de fechas. Devuelve clics, impresiones, CTR, posición media y principales consultas.",
       inputSchema: {
         siteUrl: z.string().describe("URL exacta de la propiedad en Search Console, por ejemplo https://limpiezabnb.com/"),
         startDate: z.string().describe("Fecha inicial del periodo actual en formato YYYY-MM-DD"),
@@ -267,7 +501,7 @@ function createMcpServer() {
       };
     }
   );
-  
+
   return server;
 }
 
@@ -279,13 +513,14 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "cleanify-reporting-agent",
-    version: "1.1.0",
+    version: "1.2.0",
     mcp: {
       enabled: true,
       endpoint: `${BASE_URL}/mcp`
     }
   });
 });
+
 app.get("/oauth/google/start", (req, res) => {
   try {
     const authUrl = getGoogleAuthUrl();
@@ -309,7 +544,8 @@ app.get("/oauth/google/callback", async (req, res) => {
         ok: false,
         error: "Google no devolvió ningún código OAuth."
       });
-    }  
+    }
+
     const tokens = await exchangeGoogleCodeForTokens(code);
 
     return res.type("html").send(`
@@ -439,7 +675,7 @@ app.get("/search-console/monthly", async (req, res) => {
   }
 });
 
-app.post("/api/report/monthly", (req, res) => {
+app.post("/api/report/monthly", async (req, res) => {
   try {
     const data = req.body || {};
 
@@ -450,7 +686,9 @@ app.post("/api/report/monthly", (req, res) => {
       });
     }
 
-    const report = buildMonthlyReport(data);
+    const enrichedInput = await enrichInputWithSearchConsole(data);
+    const report = buildMonthlyReport(enrichedInput);
+
     return res.json(report);
   } catch (error) {
     return res.status(500).json({
@@ -497,8 +735,9 @@ app.get("/openapi.json", (req, res) => {
     openapi: "3.1.0",
     info: {
       title: "Cleanify Reporting Agent API",
-      version: "1.1.0",
-      description: "API para convertir datos mensuales de marketing local en una estructura de informe para clientes de Cleanify."
+      version: "1.2.0",
+      description:
+        "API para convertir datos mensuales de marketing local en una estructura de informe para clientes de Cleanify."
     },
     servers: [
       {
@@ -521,7 +760,8 @@ app.get("/openapi.json", (req, res) => {
         post: {
           operationId: "generateMonthlyReport",
           summary: "Generar estructura de informe mensual para un cliente.",
-          description: "Recibe datos de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas. Devuelve secciones listas para que el agente redacte un informe mensual claro para cliente y un resumen interno para Cleanify.",
+          description:
+            "Recibe datos de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas. Si Search Console incluye siteUrl, startDate y endDate, intenta cargar datos reales desde Google Search Console.",
           requestBody: {
             required: true,
             content: {
@@ -550,7 +790,16 @@ app.get("/openapi.json", (req, res) => {
                       }
                     },
                     ga4: { type: "object" },
-                    search_console: { type: "object" },
+                    search_console: {
+                      type: "object",
+                      properties: {
+                        siteUrl: { type: "string" },
+                        startDate: { type: "string" },
+                        endDate: { type: "string" },
+                        previousStartDate: { type: "string" },
+                        previousEndDate: { type: "string" }
+                      }
+                    },
                     google_business_profile: { type: "object" },
                     calls: { type: "object" },
                     forms: { type: "object" },
