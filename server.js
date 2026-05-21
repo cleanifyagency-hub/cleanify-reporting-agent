@@ -233,6 +233,41 @@ function createMcpServer() {
     }
   );
 
+  server.registerTool(
+    "getSearchConsoleMonthlyData",
+    {
+      title: "Obtener datos mensuales de Search Console",
+      description: "Consulta datos reales de Google Search Console para un sitio y rango de fechas. Devuelve clics, impresiones, CTR, posición media y principales consultas.",
+      inputSchema: {
+        siteUrl: z.string().describe("URL exacta de la propiedad en Search Console, por ejemplo https://limpiezabnb.com/"),
+        startDate: z.string().describe("Fecha inicial del periodo actual en formato YYYY-MM-DD"),
+        endDate: z.string().describe("Fecha final del periodo actual en formato YYYY-MM-DD"),
+        previousStartDate: z.string().optional().describe("Fecha inicial del periodo anterior en formato YYYY-MM-DD"),
+        previousEndDate: z.string().optional().describe("Fecha final del periodo anterior en formato YYYY-MM-DD")
+      }
+    },
+    async (input) => {
+      const data = await getSearchConsoleMonthlyData({
+        siteUrl: input.siteUrl,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        previousStartDate: input.previousStartDate,
+        previousEndDate: input.previousEndDate,
+        rowLimit: 10
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(data, null, 2)
+          }
+        ],
+        structuredContent: data
+      };
+    }
+  );
+  
   return server;
 }
 
