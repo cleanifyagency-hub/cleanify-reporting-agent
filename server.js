@@ -337,27 +337,32 @@ app.get("/oauth/google/callback", async (req, res) => {
 app.get("/google/test", async (req, res) => {
   try {
     const auth = createAuthorizedGoogleClient();
-    const oauth2 = await import("googleapis").then(({ google }) =>
-      google.oauth2({
-        version: "v2",
-        auth
-      })
-    );
+    const { google } = await import("googleapis");
 
-    const userInfo = await oauth2.userinfo.get();
+    const searchConsole = google.webmasters({
+      version: "v3",
+      auth
+    });
+
+    const sitesResponse = await searchConsole.sites.list();
 
     return res.json({
       ok: true,
       google_connected: true,
-      email: userInfo.data.email || null,
-      name: userInfo.data.name || null
+      search_console_connected: true,
+      sites_count: sitesResponse.data.siteEntry?.length || 0,
+      sites: (sitesResponse.data.siteEntry || []).map((site) => ({
+        siteUrl: site.siteUrl,
+        permissionLevel: site.permissionLevel
+      }))
     });
   } catch (error) {
-    console.error("Error probando conexión Google:", error);
+    console.error("Error probando conexión Google Search Console:", error);
     return res.status(500).json({
       ok: false,
       google_connected: false,
-      error: "No se pudo conectar con Google usando el refresh token.",
+      search_console_connected: false,
+      error: "No se pudo conectar con Search Console usando el refresh token.",
       details: error.message
     });
   }
