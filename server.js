@@ -689,9 +689,20 @@ app.post("/api/report/monthly", async (req, res) => {
     const enrichedInput = await enrichInputWithSearchConsole(data);
     const report = buildMonthlyReport(enrichedInput);
 
-    return res.json(report);
+    return res.json({
+      route_version: "api-report-monthly-enriched-2026-05-21",
+      enrichment_input_received: {
+        has_search_console: Boolean(data.search_console),
+        siteUrl: data.search_console?.siteUrl || null,
+        startDate: data.search_console?.startDate || null,
+        endDate: data.search_console?.endDate || null
+      },
+      search_console_loaded: report.data_enrichment?.search_console_real_data_loaded ?? false,
+      report
+    });
   } catch (error) {
     return res.status(500).json({
+      route_version: "api-report-monthly-enriched-2026-05-21",
       ok: false,
       error: "Error generando el informe mensual.",
       details: error.message
