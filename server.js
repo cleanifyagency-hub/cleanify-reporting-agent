@@ -14,6 +14,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = "https://reportes.cleanify.agency";
+const APP_VERSION = "1.3.0-assets";
 
 app.use(express.json({ limit: "2mb" }));
 
@@ -418,7 +419,7 @@ function buildMonthlyReport(data) {
 function createMcpServer() {
   const server = new McpServer({
     name: "cleanify-reporting-agent",
-    version: "1.2.0"
+    version: APP_VERSION
   });
 
   server.registerTool(
@@ -426,12 +427,13 @@ function createMcpServer() {
     {
       title: "Generar informe mensual de cliente",
       description:
-        "Genera un informe mensual para clientes de Cleanify. Si search_console incluye siteUrl, startDate y endDate, esta herramienta consulta datos reales de Google Search Console antes de generar el informe.",
+        "Genera un informe mensual para clientes o proyectos de Cleanify. Si search_console incluye siteUrl, startDate y endDate, esta herramienta consulta datos reales de Google Search Console antes de generar el informe.",
       inputSchema: {
         client: z.object({
-          name: z.string().describe("Nombre del cliente"),
-          sector: z.string().optional().describe("Sector del cliente"),
+          name: z.string().describe("Nombre del cliente o proyecto"),
+          sector: z.string().optional().describe("Sector del cliente o proyecto"),
           location: z.string().optional().describe("Ciudad, provincia o zona principal"),
+          domain: z.string().optional().describe("Dominio del cliente o proyecto, por ejemplo econeta.es"),
           priority_services: z.array(z.string()).optional().describe("Servicios prioritarios")
         }),
         period: z.object({
@@ -514,11 +516,36 @@ app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     service: "cleanify-reporting-agent",
-    version: "1.2.0",
-    mcp: {
-      enabled: true,
-      endpoint: `${BASE_URL}/mcp`
+    version: APP_VERSION,
+    routes: {
+      google_assets: `${BASE_URL}/google/assets`,
+      google_resolve_assets: `${BASE_URL}/google/resolve-assets`,
+      google_test: `${BASE_URL}/google/test`,
+      search_console_monthly: `${BASE_URL}/search-console/monthly`,
+      monthly_report: `${BASE_URL}/api/report/monthly`,
+      mcp: `${BASE_URL}/mcp`
     }
+  });
+});
+
+app.get("/debug/routes", (req, res) => {
+  res.json({
+    ok: true,
+    version: APP_VERSION,
+    routes: [
+      "GET /",
+      "GET /health",
+      "GET /debug/routes",
+      "GET /oauth/google/start",
+      "GET /oauth/google/callback",
+      "GET /google/test",
+      "GET /google/assets",
+      "GET /google/resolve-assets",
+      "GET /search-console/monthly",
+      "POST /api/report/monthly",
+      "POST /mcp",
+      "GET /openapi.json"
+    ]
   });
 });
 
@@ -621,6 +648,7 @@ app.get("/google/test", async (req, res) => {
 
     return res.json({
       ok: true,
+      version: APP_VERSION,
       google_connected: true,
       search_console_connected: true,
       sites_count: sitesResponse.data.siteEntry?.length || 0,
@@ -633,6 +661,7 @@ app.get("/google/test", async (req, res) => {
     console.error("Error probando conexión Google Search Console:", error);
     return res.status(500).json({
       ok: false,
+      version: APP_VERSION,
       google_connected: false,
       search_console_connected: false,
       error: "No se pudo conectar con Search Console usando el refresh token.",
@@ -647,6 +676,7 @@ app.get("/google/assets", async (req, res) => {
 
     return res.json({
       ok: true,
+      version: APP_VERSION,
       source: "google_assets",
       counts: {
         search_console: assets.search_console.length,
@@ -658,6 +688,7 @@ app.get("/google/assets", async (req, res) => {
     console.error("Error listando activos Google:", error);
     return res.status(500).json({
       ok: false,
+      version: APP_VERSION,
       source: "google_assets",
       error: "No se pudieron listar los activos de Google.",
       details: error.message
@@ -677,6 +708,7 @@ app.get("/google/resolve-assets", async (req, res) => {
 
     return res.json({
       ok: true,
+      version: APP_VERSION,
       source: "google_assets_resolver",
       resolution
     });
@@ -684,6 +716,7 @@ app.get("/google/resolve-assets", async (req, res) => {
     console.error("Error resolviendo activos Google:", error);
     return res.status(500).json({
       ok: false,
+      version: APP_VERSION,
       source: "google_assets_resolver",
       error: "No se pudieron resolver los activos del cliente/proyecto.",
       details: error.message
@@ -712,6 +745,7 @@ app.get("/search-console/monthly", async (req, res) => {
 
     return res.json({
       ok: true,
+      version: APP_VERSION,
       source: "search_console",
       data
     });
@@ -719,6 +753,7 @@ app.get("/search-console/monthly", async (req, res) => {
     console.error("Error consultando Search Console mensual:", error);
     return res.status(500).json({
       ok: false,
+      version: APP_VERSION,
       source: "search_console",
       error: "No se pudo consultar Search Console.",
       details: error.message
@@ -733,6 +768,7 @@ app.post("/api/report/monthly", async (req, res) => {
     if (!data.client || !data.client.name) {
       return res.status(400).json({
         ok: false,
+        version: APP_VERSION,
         error: "Falta client.name en el JSON enviado."
       });
     }
@@ -742,6 +778,7 @@ app.post("/api/report/monthly", async (req, res) => {
 
     return res.json({
       route_version: "api-report-monthly-enriched-2026-05-21",
+      version: APP_VERSION,
       enrichment_input_received: {
         has_search_console: Boolean(data.search_console),
         siteUrl: data.search_console?.siteUrl || null,
@@ -754,6 +791,7 @@ app.post("/api/report/monthly", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       route_version: "api-report-monthly-enriched-2026-05-21",
+      version: APP_VERSION,
       ok: false,
       error: "Error generando el informe mensual.",
       details: error.message
@@ -797,9 +835,9 @@ app.get("/openapi.json", (req, res) => {
     openapi: "3.1.0",
     info: {
       title: "Cleanify Reporting Agent API",
-      version: "1.2.0",
+      version: APP_VERSION,
       description:
-        "API para convertir datos mensuales de marketing local en una estructura de informe para clientes de Cleanify."
+        "API para convertir datos mensuales de marketing local en una estructura de informe para clientes y proyectos de Cleanify."
     },
     servers: [
       {
@@ -821,7 +859,7 @@ app.get("/openapi.json", (req, res) => {
       "/api/report/monthly": {
         post: {
           operationId: "generateMonthlyReport",
-          summary: "Generar estructura de informe mensual para un cliente.",
+          summary: "Generar estructura de informe mensual para un cliente o proyecto.",
           description:
             "Recibe datos de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas. Si Search Console incluye siteUrl, startDate y endDate, intenta cargar datos reales desde Google Search Console.",
           requestBody: {
@@ -837,6 +875,7 @@ app.get("/openapi.json", (req, res) => {
                         name: { type: "string" },
                         sector: { type: "string" },
                         location: { type: "string" },
+                        domain: { type: "string" },
                         priority_services: {
                           type: "array",
                           items: { type: "string" }
@@ -901,4 +940,5 @@ app.get("/openapi.json", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Cleanify Reporting Agent escuchando en puerto ${PORT}`);
   console.log(`MCP endpoint disponible en ${BASE_URL}/mcp`);
+  console.log(`Versión desplegada: ${APP_VERSION}`);
 });
