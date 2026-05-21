@@ -273,36 +273,7 @@ app.get("/oauth/google/callback", async (req, res) => {
         ok: false,
         error: "Google no devolvió ningún código OAuth."
       });
-    }
-app.get("/google/test", async (req, res) => {
-  try {
-    const auth = createAuthorizedGoogleClient();
-    const oauth2 = await import("googleapis").then(({ google }) =>
-      google.oauth2({
-        version: "v2",
-        auth
-      })
-    );
-
-    const userInfo = await oauth2.userinfo.get();
-
-    return res.json({
-      ok: true,
-      google_connected: true,
-      email: userInfo.data.email || null,
-      name: userInfo.data.name || null
-    });
-  } catch (error) {
-    console.error("Error probando conexión Google:", error);
-    return res.status(500).json({
-      ok: false,
-      google_connected: false,
-      error: "No se pudo conectar con Google usando el refresh token.",
-      details: error.message
-    });
-  }
-});
-    
+    }  
     const tokens = await exchangeGoogleCodeForTokens(code);
 
     return res.type("html").send(`
@@ -358,6 +329,35 @@ app.get("/google/test", async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "No se pudo completar OAuth con Google.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/google/test", async (req, res) => {
+  try {
+    const auth = createAuthorizedGoogleClient();
+    const oauth2 = await import("googleapis").then(({ google }) =>
+      google.oauth2({
+        version: "v2",
+        auth
+      })
+    );
+
+    const userInfo = await oauth2.userinfo.get();
+
+    return res.json({
+      ok: true,
+      google_connected: true,
+      email: userInfo.data.email || null,
+      name: userInfo.data.name || null
+    });
+  } catch (error) {
+    console.error("Error probando conexión Google:", error);
+    return res.status(500).json({
+      ok: false,
+      google_connected: false,
+      error: "No se pudo conectar con Google usando el refresh token.",
       details: error.message
     });
   }
