@@ -4,6 +4,7 @@ import {
   createAuthorizedGoogleClient
 } from "./google-auth.js";
 import { getSearchConsoleMonthlyData } from "./google-search-console.js";
+import { listAvailableAssets, resolveClientAssets } from "./google-assets.js";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -635,6 +636,56 @@ app.get("/google/test", async (req, res) => {
       google_connected: false,
       search_console_connected: false,
       error: "No se pudo conectar con Search Console usando el refresh token.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/google/assets", async (req, res) => {
+  try {
+    const assets = await listAvailableAssets();
+
+    return res.json({
+      ok: true,
+      source: "google_assets",
+      counts: {
+        search_console: assets.search_console.length,
+        ga4: assets.ga4.length
+      },
+      assets
+    });
+  } catch (error) {
+    console.error("Error listando activos Google:", error);
+    return res.status(500).json({
+      ok: false,
+      source: "google_assets",
+      error: "No se pudieron listar los activos de Google.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/google/resolve-assets", async (req, res) => {
+  try {
+    const { clientName, domain, location } = req.query;
+
+    const resolution = await resolveClientAssets({
+      clientName,
+      domain,
+      location
+    });
+
+    return res.json({
+      ok: true,
+      source: "google_assets_resolver",
+      resolution
+    });
+  } catch (error) {
+    console.error("Error resolviendo activos Google:", error);
+    return res.status(500).json({
+      ok: false,
+      source: "google_assets_resolver",
+      error: "No se pudieron resolver los activos del cliente/proyecto.",
       details: error.message
     });
   }
