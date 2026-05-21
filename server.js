@@ -5,6 +5,7 @@ import {
 } from "./google-auth.js";
 import { getSearchConsoleMonthlyData } from "./google-search-console.js";
 import { listAvailableAssets, resolveClientAssets } from "./google-assets.js";
+import { getGa4MonthlyData } from "./google-ga4.js";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -521,6 +522,7 @@ app.get("/health", (req, res) => {
       google_assets: `${BASE_URL}/google/assets`,
       google_resolve_assets: `${BASE_URL}/google/resolve-assets`,
       google_test: `${BASE_URL}/google/test`,
+      ga4_monthly: `${BASE_URL}/ga4/monthly`,
       search_console_monthly: `${BASE_URL}/search-console/monthly`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
       mcp: `${BASE_URL}/mcp`
@@ -538,6 +540,7 @@ app.get("/debug/routes", (req, res) => {
       "GET /debug/routes",
       "GET /oauth/google/start",
       "GET /oauth/google/callback",
+      "GET /ga4/monthly",
       "GET /google/test",
       "GET /google/assets",
       "GET /google/resolve-assets",
@@ -719,6 +722,43 @@ app.get("/google/resolve-assets", async (req, res) => {
       version: APP_VERSION,
       source: "google_assets_resolver",
       error: "No se pudieron resolver los activos del cliente/proyecto.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/ga4/monthly", async (req, res) => {
+  try {
+    const {
+      propertyId,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate
+    } = req.query;
+
+    const data = await getGa4MonthlyData({
+      propertyId,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate,
+      rowLimit: 10
+    });
+
+    return res.json({
+      ok: true,
+      version: APP_VERSION,
+      source: "ga4",
+      data
+    });
+  } catch (error) {
+    console.error("Error consultando GA4 mensual:", error);
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "ga4",
+      error: "No se pudo consultar GA4.",
       details: error.message
     });
   }
