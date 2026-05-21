@@ -1,3 +1,7 @@
+import {
+  getGoogleAuthUrl,
+  exchangeGoogleCodeForTokens
+} from "./google-auth.js";
 import express from "express";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -244,6 +248,90 @@ app.get("/health", (req, res) => {
       endpoint: `${BASE_URL}/mcp`
     }
   });
+});
+app.get("/oauth/google/start", (req, res) => {
+  try {
+    const authUrl = getGoogleAuthUrl();
+    return res.redirect(authUrl);
+  } catch (error) {
+    console.error("Error iniciando OAuth Google:", error);
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo iniciar OAuth con Google.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/oauth/google/callback", async (req, res) => {
+  try {
+    const code = req.query.code;
+
+    if (!code) {
+      return res.status(400).json({
+        ok: false,
+        error: "Google no devolvió ningún código OAuth."
+      });
+    }
+
+    const tokens = await exchangeGoogleCodeForTokens(code);
+
+    return res.type("html").send(`
+      <html>
+        <head>
+          <title>Google conectado</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              max-width: 760px;
+              margin: 48px auto;
+              line-height: 1.5;
+              color: #111827;
+            }
+            code, pre {
+              background: #f3f4f6;
+              padding: 12px;
+              border-radius: 8px;
+              display: block;
+              white-space: pre-wrap;
+              word-break: break-all;
+            }
+            .ok {
+              color: #047857;
+              font-weight: bold;
+            }
+            .warn {
+              color: #92400e;
+              font-weight: bold;
+            }
+          </style>
+        </head>
+        <body>
+          <h1 class="ok">Google conectado correctamente ✅</h1>
+          <p>La autorización ha funcionado.</p>
+
+          ${
+            tokens.refresh_token
+              ? `<p class="warn">Copia este refresh token y guárdalo como variable de entorno en Hostinger:</p>
+                 <pre>${tokens.refresh_token}</pre>
+                 <p>Nombre de la variable:</p>
+                 <code>GOOGLE_REFRESH_TOKEN</code>`
+              : `<p class="warn">Google no devolvió refresh_token.</p>
+                 <p>Esto puede pasar si esta cuenta ya autorizó antes la app. Luego lo solucionamos revocando el acceso y repitiendo la autorización.</p>`
+          }
+
+          <p>Después de guardar la variable, puedes cerrar esta pestaña.</p>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("Error en callback OAuth Google:", error);
+    return res.status(500).json({
+      ok: false,
+      error: "No se pudo completar OAuth con Google.",
+      details: error.message
+    });
+  }
 });
 
 app.post("/api/report/monthly", (req, res) => {
