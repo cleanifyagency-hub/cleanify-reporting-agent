@@ -2042,6 +2042,38 @@ app.get("/search-console/monthly", async (req, res) => {
   }
 });
 
+app.post("/api/report/monthly/html", async (req, res) => {
+  try {
+    const data = req.body || {};
+
+    if (!data.client || !data.client.name) {
+      return res.status(400).type("html").send(`
+        <html>
+          <body style="font-family: Arial, sans-serif; padding: 32px;">
+            <h1>Error</h1>
+            <p>Falta <strong>client.name</strong> en el JSON enviado.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    const enrichedInput = await enrichInputWithGoogleData(data);
+    const report = buildMonthlyReport(enrichedInput);
+    const final_outputs = buildFinalReportOutputs(report);
+
+    return res.type("html").send(final_outputs.client_report_html);
+  } catch (error) {
+    return res.status(500).type("html").send(`
+      <html>
+        <body style="font-family: Arial, sans-serif; padding: 32px;">
+          <h1>Error generando el informe mensual</h1>
+          <p>${error.message}</p>
+        </body>
+      </html>
+    `);
+  }
+});
+
 app.post("/api/report/monthly", async (req, res) => {
   try {
     const data = req.body || {};
