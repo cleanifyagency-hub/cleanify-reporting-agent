@@ -932,8 +932,10 @@ function buildMonthlyReport(data) {
     );
   }
 
-  if (!data.google_business_profile) {
-    missingDataBlocks.push("No se han aportado datos de Google Business Profile.");
+    if (!data.google_business_profile) {
+    missingDataBlocks.push(
+      "Google Business Profile / Google Maps está pendiente de conexión API. Mientras Google aprueba el acceso, este informe se genera con GA4, Search Console, tareas realizadas y datos comerciales aportados manualmente."
+    );
   }
 
   if (!data.calls) {
