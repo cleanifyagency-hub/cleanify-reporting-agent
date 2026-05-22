@@ -2,7 +2,8 @@ import { google } from "googleapis";
 
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/webmasters.readonly",
-  "https://www.googleapis.com/auth/analytics.readonly"
+  "https://www.googleapis.com/auth/analytics.readonly",
+  "https://www.googleapis.com/auth/business.manage"
 ];
 
 export function createGoogleOAuthClient() {
@@ -25,6 +26,7 @@ export function getGoogleAuthUrl() {
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
+    include_granted_scopes: true,
     scope: GOOGLE_SCOPES
   });
 }
