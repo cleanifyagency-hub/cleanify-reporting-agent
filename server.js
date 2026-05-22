@@ -1305,8 +1305,206 @@ Cualquier duda, lo revisamos juntos.
 Un saludo,
 El equipo de Cleanify`;
 
+   const clientReportHtml = `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Informe mensual · ${clientName}</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f3f4f6;
+      color: #111827;
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.55;
+    }
+
+    .page {
+      max-width: 860px;
+      margin: 32px auto;
+      background: #ffffff;
+      padding: 48px 56px;
+      border-radius: 18px;
+      box-shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
+    }
+
+    .eyebrow {
+      color: #64748b;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    h1 {
+      font-size: 30px;
+      line-height: 1.15;
+      margin: 0 0 8px;
+      color: #0f172a;
+    }
+
+    .period {
+      color: #475569;
+      font-size: 16px;
+      margin-bottom: 32px;
+    }
+
+    h2 {
+      font-size: 20px;
+      margin: 34px 0 12px;
+      color: #0f172a;
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 8px;
+    }
+
+    h3 {
+      font-size: 16px;
+      margin: 22px 0 10px;
+      color: #1f2937;
+    }
+
+    p {
+      margin: 0 0 14px;
+    }
+
+    ul {
+      margin: 10px 0 18px 22px;
+      padding: 0;
+    }
+
+    li {
+      margin-bottom: 7px;
+    }
+
+    .summary-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin: 20px 0;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0 20px;
+    }
+
+    .metric-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 14px 16px;
+      background: #ffffff;
+    }
+
+    .metric-card strong {
+      display: block;
+      margin-bottom: 4px;
+      color: #0f172a;
+    }
+
+    .note {
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      color: #7c2d12;
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin: 18px 0;
+    }
+
+    .footer {
+      margin-top: 38px;
+      padding-top: 18px;
+      border-top: 1px solid #e5e7eb;
+      color: #64748b;
+      font-size: 14px;
+    }
+
+    @media print {
+      body {
+        background: #ffffff;
+      }
+
+      .page {
+        margin: 0;
+        max-width: none;
+        box-shadow: none;
+        border-radius: 0;
+        padding: 28px 34px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="eyebrow">Informe mensual</div>
+    <h1>${clientName}</h1>
+    <div class="period">Periodo: ${month}</div>
+
+    <section class="summary-box">
+      <p>${sections.resumen_del_mes || `Durante ${month}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`}</p>
+      <p>Este mes ya contamos con lectura real de GA4 y Search Console, lo que nos permite revisar tanto el comportamiento de la web como la visibilidad orgánica en Google. La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.</p>
+    </section>
+
+    <h2>1. Qué se ha hecho este mes</h2>
+    <ul>
+      ${(Array.isArray(sections.que_se_ha_hecho) ? sections.que_se_ha_hecho : []).map((item) => `<li>${item}</li>`).join("") || "<li>No se han indicado tareas realizadas este mes.</li>"}
+    </ul>
+    <p>Estas acciones son importantes porque ayudan a ordenar la medición, entender mejor qué canales están generando actividad y preparar una lectura más clara del avance del proyecto.</p>
+
+    <h2>2. Resultados y señales principales</h2>
+
+    <h3>Tráfico y comportamiento web</h3>
+    <div class="metrics-grid">
+      <div class="metric-card"><strong>Usuarios activos</strong>${ga4Users}</div>
+      <div class="metric-card"><strong>Sesiones</strong>${ga4Sessions}</div>
+      <div class="metric-card"><strong>Eventos de contacto detectados</strong>${ga4Conversions}</div>
+      <div class="metric-card"><strong>Engagement rate</strong>${ga4EngagementRate}</div>
+    </div>
+    <p>La web ya está generando datos suficientes para revisar usuarios, sesiones, páginas principales y eventos. Aunque este mes no se observa un crecimiento fuerte frente al periodo anterior, sí tenemos una base de medición útil para detectar qué páginas reciben visitas y qué acciones conviene reforzar.</p>
+
+    <h3>Visibilidad orgánica en Google</h3>
+    <div class="metrics-grid">
+      <div class="metric-card"><strong>Clics orgánicos</strong>${scClicks}</div>
+      <div class="metric-card"><strong>Impresiones</strong>${scImpressions}</div>
+      <div class="metric-card"><strong>CTR</strong>${scCtr}</div>
+      <div class="metric-card"><strong>Posición media</strong>${scPosition}</div>
+    </div>
+    <p>En Search Console vemos que todavía hay margen de mejora en visibilidad y posiciones. Esto no debe interpretarse como un problema aislado, sino como una señal de que debemos seguir reforzando páginas, contenidos, intención de búsqueda y optimización de snippets para convertir más apariciones en clics.</p>
+
+    <h3>Señales destacadas</h3>
+    <ul>
+      ${(Array.isArray(sections.senales_positivas) ? sections.senales_positivas : []).map((item) => `<li>${item}</li>`).join("") || "<li>Todavía no hay señales destacadas suficientes.</li>"}
+    </ul>
+
+    <h2>3. Qué todavía necesita tiempo</h2>
+    <ul>
+      ${(Array.isArray(sections.que_necesita_tiempo) ? sections.que_necesita_tiempo : []).map((item) => `<li>${item}</li>`).join("") || "<li>La consolidación de resultados necesita más histórico.</li>"}
+    </ul>
+    <div class="note">En SEO local, las mejoras no siempre se traducen de forma inmediata en llamadas o formularios. Primero suelen aparecer señales de rastreo, indexación, impresiones, pequeñas entradas de tráfico y consultas nuevas.</div>
+
+    <h2>4. Qué haremos el próximo mes</h2>
+    <ul>
+      ${(Array.isArray(sections.proximo_mes) ? sections.proximo_mes : []).map((item) => `<li>${item}</li>`).join("") || "<li>Revisar datos del mes y priorizar las acciones con mayor impacto.</li>"}
+    </ul>
+
+    <h2>5. Qué necesitamos de vosotros</h2>
+    <ul>
+      ${(Array.isArray(sections.necesitamos_del_cliente) ? sections.necesitamos_del_cliente : []).map((item) => `<li>${item}</li>`).join("") || "<li>Feedback sobre la calidad de los contactos recibidos.</li>"}
+    </ul>
+
+    <h2>6. Cierre</h2>
+    <p>El proyecto sigue avanzando con una base de medición más clara. El siguiente paso será utilizar estos datos para priorizar mejor las acciones: revisar páginas con potencial, reforzar servicios importantes, corregir posibles fricciones y conectar cada vez mejor la visibilidad con contactos reales.</p>
+
+    <div class="footer">Cleanify · Informe mensual de evolución</div>
+  </main>
+</body>
+</html>`;
+
   return {
     client_report_markdown: clientReportMarkdown,
+    client_report_html: clientReportHtml,
     internal_summary_markdown: internalSummaryMarkdown,
     email_subjects: emailSubjects,
     email_body: emailBody
