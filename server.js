@@ -1840,6 +1840,67 @@ app.get("/google/test", async (req, res) => {
   }
 });
 
+app.get("/gbp/accounts", async (req, res) => {
+  try {
+    const accessToken = await getGoogleAccessToken();
+
+    const response = await fetch(
+      "https://mybusinessaccountmanagement.googleapis.com/v1/accounts",
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const responseText = await response.text();
+
+    let json;
+    try {
+      json = responseText ? JSON.parse(responseText) : {};
+    } catch (error) {
+      return res.status(500).json({
+        ok: false,
+        version: APP_VERSION,
+        source: "google_business_profile",
+        error: "Google Business Profile devolvió una respuesta no JSON.",
+        raw_response: responseText
+      });
+    }
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        version: APP_VERSION,
+        source: "google_business_profile",
+        error: "No se pudieron listar las cuentas de Google Business Profile.",
+        status: response.status,
+        details: json
+      });
+    }
+
+    return res.json({
+      ok: true,
+      version: APP_VERSION,
+      source: "google_business_profile",
+      accounts_count: Array.isArray(json.accounts) ? json.accounts.length : 0,
+      accounts: json.accounts || []
+    });
+  } catch (error) {
+    console.error("Error listando cuentas GBP:", error);
+
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "google_business_profile",
+      error: "Error interno listando cuentas de Google Business Profile.",
+      details: error.message
+    });
+  }
+});
+
 app.get("/google/assets", async (req, res) => {
   try {
     const assets = await listAvailableAssets();
