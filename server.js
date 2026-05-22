@@ -14,14 +14,42 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = "https://reportes.cleanify.agency";
-const APP_VERSION = "1.3.0-assets";
+const APP_VERSION = "1.4.0-ga4";
 
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "4mb" }));
 
 function safeNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function normalizeDomain(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/^sc-domain:/, "")
+    .replace(/\/$/, "")
+    .trim();
+}
+
+function isValidDate(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function cleanPropertyId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  return raw.replace(/^properties\//, "");
 }
 
 function compare(current, previous) {
@@ -54,6 +82,190 @@ function compare(current, previous) {
     percent_change: percentChange,
     trend
   };
+}
+
+function findMetric(row, metricHeaders, metricName) {
+  const index = metricHeaders.findIndex((header) => header.name === metricName);
+  if (index === -1) return null;
+  return safeNumber(row?.metricValues?.[index]?.value);
+}
+
+function findDimension(row, dimensionHeaders, dimensionName) {
+  const index = dimensionHeaders.findIndex((header) => header.name === dimensionName);
+  if (index === -1) return null;
+  return row?.dimensionValues?.[index]?.value ?? null;
+}
+
+async function getGoogleAccessToken() {
+  const auth = createAuthorizedGoogleClient();
+  const tokenResponse = await auth.getAccessToken();
+
+  if (typeof tokenResponse === "string") {
+    return tokenResponse;
+  }
+
+  if (tokenResponse?.token) {
+    return tokenResponse.token;
+  }
+
+  throw new Error("No se pudo obtener access token de Google.");
+}
+
+async function runGa4Report({ propertyId, dateRanges, metrics, dimensions = [], limit = 10, orderBys = [] }) {
+  const cleanId = cleanPropertyId(propertyId);
+
+  if (!cleanId) {
+    throw new Error("Falta propertyId de GA4.");
+  }
+
+  const accessToken = await getGoogleAccessToken();
+
+  const body = {
+    dateRanges,
+    metrics: metrics.map((name) => ({ name })),
+    dimensions: dimensions.map((name) => ({ name })),
+    limit: String(limit),
+    returnPropertyQuota: true
+  };
+
+  if (orderBys.length > 0) {
+    body.orderBys = orderBys;
+  }
+
+  const response = await fetch(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${cleanId}:runReport`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    }
+  );
+
+  const responseText = await response.text();
+
+  let json;
+  try {
+    json = responseText ? JSON.parse(responseText) : {};
+  } catch (error) {
+    throw new Error(`GA4 devolvió una respuesta no JSON: ${responseText}`);
+  }
+
+  if (!response.ok) {
+    const message =
+      json?.error?.message ||
+      json?.message ||
+      responseText ||
+      `HTTP ${response.status}`;
+
+    throw new Error(message);
+  }
+
+  return json;
+}
+
+function parseGa4Summary(report) {
+  const metricHeaders = report.metricHeaders || [];
+  const rows = report.rows || [];
+  const row = rows[0] || {};
+
+  return {
+    activeUsers: findMetric(row, metricHeaders, "activeUsers") ?? 0,
+    totalUsers: findMetric(row, metricHeaders, "totalUsers") ?? 0,
+    sessions: findMetric(row, metricHeaders, "sessions") ?? 0,
+    engagedSessions: findMetric(row, metricHeaders, "engagedSessions") ?? 0,
+    eventCount: findMetric(row, metricHeaders, "eventCount") ?? 0,
+    engagementRate: findMetric(row, metricHeaders, "engagementRate") ?? null,
+    screenPageViews: findMetric(row, metricHeaders, "screenPageViews") ?? 0
+  };
+}
+
+function parseGa4DimensionRows(report, dimensionName, metricNames) {
+  const dimensionHeaders = report.dimensionHeaders || [];
+  const metricHeaders = report.metricHeaders || [];
+  const rows = report.rows || [];
+
+  return rows.map((row) => {
+    const item = {
+      [dimensionName]: findDimension(row, dimensionHeaders, dimensionName)
+    };
+
+    for (const metricName of metricNames) {
+      item[metricName] = findMetric(row, metricHeaders, metricName) ?? 0;
+    }
+
+    return item;
+  });
+}
+
+function classifyLeadEvents(events) {
+  const leadPatterns = [
+    "lead",
+    "form",
+    "submit",
+    "enviar",
+    "contact",
+    "contacto",
+    "whatsapp",
+    "phone",
+    "telefono",
+    "teléfono",
+    "call",
+    "click_tel",
+    "click_phone",
+    "generate_lead"
+  ];
+
+  const normalizedPatterns = leadPatterns.map(normalizeText);
+
+  return events
+    .filter((event) => {
+      const eventName = normalizeText(event.eventName);
+      return normalizedPatterns.some((pattern) => eventName.includes(pattern));
+    })
+    .map((event) => ({
+      eventName: event.eventName,
+      eventCount: event.eventCount || 0
+    }));
+}
+
+function buildGa4Signals(ga4) {
+  const signals = [];
+
+  const users = compare(ga4.users, ga4.previous_users);
+  const sessions = compare(ga4.sessions, ga4.previous_sessions);
+  const events = compare(ga4.event_count, ga4.previous_event_count);
+  const conversions = compare(ga4.conversions, ga4.previous_conversions);
+
+  if (ga4.real_data_loaded) {
+    signals.push("Se han cargado datos reales de GA4 para este informe.");
+  }
+
+  if (users.trend === "sube") {
+    signals.push("Aumentan los usuarios activos en la web según GA4.");
+  }
+
+  if (sessions.trend === "sube") {
+    signals.push("Aumentan las sesiones registradas en la web.");
+  }
+
+  if (events.trend === "sube") {
+    signals.push("Aumenta la actividad registrada en eventos de GA4.");
+  }
+
+  if (conversions.trend === "sube") {
+    signals.push("Aumentan los eventos de contacto o conversión detectados en GA4.");
+  }
+
+  if (ga4.real_data_loaded && users.trend !== "sube" && sessions.trend !== "sube") {
+    signals.push(
+      "El tráfico web todavía no muestra un crecimiento claro en GA4; conviene interpretar este dato junto con Search Console, llamadas, formularios y tareas realizadas."
+    );
+  }
+
+  return signals;
 }
 
 function buildSearchConsoleSignals(searchConsole) {
@@ -125,13 +337,392 @@ function buildSearchConsoleSignals(searchConsole) {
   return signals;
 }
 
+function findBestGa4Asset(assets, input = {}) {
+  const ga4Assets = Array.isArray(assets?.ga4) ? assets.ga4 : [];
+
+  const wantedPropertyId = cleanPropertyId(input.propertyId || input.propertyResourceName);
+  const wantedDomain = normalizeDomain(input.domain || input.clientDomain);
+  const wantedClientName = normalizeText(input.clientName || input.client?.name || input.name);
+
+  if (wantedPropertyId) {
+    const byId = ga4Assets.find((asset) => cleanPropertyId(asset.propertyId) === wantedPropertyId);
+    if (byId) return byId;
+  }
+
+  if (wantedDomain) {
+    const byDomain = ga4Assets.find((asset) => {
+      const propertyName = normalizeDomain(asset.propertyName);
+      const normalizedPropertyName = normalizeDomain(asset.normalizedPropertyName);
+      const accountName = normalizeDomain(asset.accountName);
+      return (
+        propertyName.includes(wantedDomain) ||
+        normalizedPropertyName.includes(wantedDomain) ||
+        accountName.includes(wantedDomain) ||
+        wantedDomain.includes(propertyName)
+      );
+    });
+
+    if (byDomain) return byDomain;
+  }
+
+  if (wantedClientName) {
+    const byName = ga4Assets.find((asset) => {
+      const propertyName = normalizeText(asset.propertyName);
+      const normalizedPropertyName = normalizeText(asset.normalizedPropertyName);
+      const accountName = normalizeText(asset.accountName);
+      return (
+        propertyName.includes(wantedClientName) ||
+        normalizedPropertyName.includes(wantedClientName) ||
+        accountName.includes(wantedClientName) ||
+        wantedClientName.includes(propertyName) ||
+        wantedClientName.includes(accountName)
+      );
+    });
+
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
+function findBestSearchConsoleAsset(assets, input = {}) {
+  const scAssets = Array.isArray(assets?.search_console) ? assets.search_console : [];
+
+  const wantedSiteUrl = String(input.siteUrl || "").trim();
+  const wantedDomain = normalizeDomain(input.domain || input.clientDomain || wantedSiteUrl);
+  const wantedClientName = normalizeText(input.clientName || input.client?.name || input.name);
+
+  if (wantedSiteUrl) {
+    const bySiteUrl = scAssets.find((asset) => asset.siteUrl === wantedSiteUrl);
+    if (bySiteUrl) return bySiteUrl;
+  }
+
+  if (wantedDomain) {
+    const byDomain = scAssets.find((asset) => {
+      const assetDomain = normalizeDomain(asset.domain || asset.siteUrl);
+      return assetDomain === wantedDomain || assetDomain.includes(wantedDomain) || wantedDomain.includes(assetDomain);
+    });
+
+    if (byDomain) return byDomain;
+  }
+
+  if (wantedClientName) {
+    const byName = scAssets.find((asset) => {
+      const assetDomain = normalizeText(asset.domain || asset.siteUrl);
+      return assetDomain.includes(wantedClientName) || wantedClientName.includes(assetDomain);
+    });
+
+    if (byName) return byName;
+  }
+
+  return null;
+}
+
+async function resolveGoogleAssetsForClient(input = {}) {
+  const assets = await listAvailableAssets();
+
+  let resolverOutput = null;
+  try {
+    resolverOutput = await resolveClientAssets({
+      clientName: input.clientName || input.client?.name || input.name,
+      domain: input.domain || input.client?.domain || input.clientDomain,
+      location: input.location || input.client?.location
+    });
+  } catch (error) {
+    resolverOutput = {
+      ok: false,
+      error: error.message
+    };
+  }
+
+  const ga4 = findBestGa4Asset(assets, {
+    propertyId: input.propertyId,
+    propertyResourceName: input.propertyResourceName,
+    domain: input.domain || input.client?.domain || input.clientDomain,
+    clientName: input.clientName || input.client?.name || input.name
+  });
+
+  const searchConsole = findBestSearchConsoleAsset(assets, {
+    siteUrl: input.siteUrl,
+    domain: input.domain || input.client?.domain || input.clientDomain,
+    clientName: input.clientName || input.client?.name || input.name
+  });
+
+  return {
+    ok: true,
+    version: APP_VERSION,
+    assets_count: {
+      search_console: Array.isArray(assets.search_console) ? assets.search_console.length : 0,
+      ga4: Array.isArray(assets.ga4) ? assets.ga4.length : 0
+    },
+    matched: {
+      ga4,
+      search_console: searchConsole
+    },
+    resolver_output: resolverOutput,
+    all_assets: assets
+  };
+}
+
+async function getGa4MonthlyData({
+  propertyId,
+  propertyResourceName,
+  clientName,
+  domain,
+  location,
+  startDate,
+  endDate,
+  previousStartDate,
+  previousEndDate,
+  rowLimit = 10
+}) {
+  if (!isValidDate(startDate) || !isValidDate(endDate)) {
+    throw new Error("GA4 necesita startDate y endDate en formato YYYY-MM-DD.");
+  }
+
+  let resolvedAssets = null;
+  let resolvedProperty = null;
+  let finalPropertyId = cleanPropertyId(propertyId || propertyResourceName);
+
+  if (!finalPropertyId) {
+    resolvedAssets = await resolveGoogleAssetsForClient({
+      propertyId,
+      propertyResourceName,
+      clientName,
+      domain,
+      location
+    });
+
+    resolvedProperty = resolvedAssets.matched.ga4;
+
+    if (!resolvedProperty?.propertyId) {
+      throw new Error(
+        "No se pudo resolver automáticamente la propiedad GA4. Pasa propertyId o un domain/clientName que coincida con /google/assets."
+      );
+    }
+
+    finalPropertyId = cleanPropertyId(resolvedProperty.propertyId);
+  } else {
+    const assets = await listAvailableAssets();
+    resolvedProperty = findBestGa4Asset(assets, { propertyId: finalPropertyId }) || {
+      propertyId: finalPropertyId,
+      propertyResourceName: `properties/${finalPropertyId}`,
+      propertyName: null,
+      accountName: null
+    };
+  }
+
+  const currentSummaryReport = await runGa4Report({
+    propertyId: finalPropertyId,
+    dateRanges: [{ startDate, endDate }],
+    metrics: [
+      "activeUsers",
+      "totalUsers",
+      "sessions",
+      "engagedSessions",
+      "eventCount",
+      "engagementRate",
+      "screenPageViews"
+    ],
+    limit: 1
+  });
+
+  const currentSummary = parseGa4Summary(currentSummaryReport);
+
+  let previousSummary = null;
+  if (isValidDate(previousStartDate) && isValidDate(previousEndDate)) {
+    const previousSummaryReport = await runGa4Report({
+      propertyId: finalPropertyId,
+      dateRanges: [{ startDate: previousStartDate, endDate: previousEndDate }],
+      metrics: [
+        "activeUsers",
+        "totalUsers",
+        "sessions",
+        "engagedSessions",
+        "eventCount",
+        "engagementRate",
+        "screenPageViews"
+      ],
+      limit: 1
+    });
+
+    previousSummary = parseGa4Summary(previousSummaryReport);
+  }
+
+  const eventsReport = await runGa4Report({
+    propertyId: finalPropertyId,
+    dateRanges: [{ startDate, endDate }],
+    dimensions: ["eventName"],
+    metrics: ["eventCount"],
+    limit: rowLimit,
+    orderBys: [
+      {
+        metric: {
+          metricName: "eventCount"
+        },
+        desc: true
+      }
+    ]
+  });
+
+  const topEvents = parseGa4DimensionRows(eventsReport, "eventName", ["eventCount"]);
+  const leadEvents = classifyLeadEvents(topEvents);
+  const conversionEventsCount = leadEvents.reduce(
+    (sum, event) => sum + (safeNumber(event.eventCount) || 0),
+    0
+  );
+
+  let previousLeadEvents = [];
+  let previousConversionEventsCount = null;
+
+  if (isValidDate(previousStartDate) && isValidDate(previousEndDate)) {
+    const previousEventsReport = await runGa4Report({
+      propertyId: finalPropertyId,
+      dateRanges: [{ startDate: previousStartDate, endDate: previousEndDate }],
+      dimensions: ["eventName"],
+      metrics: ["eventCount"],
+      limit: rowLimit,
+      orderBys: [
+        {
+          metric: {
+            metricName: "eventCount"
+          },
+          desc: true
+        }
+      ]
+    });
+
+    previousLeadEvents = classifyLeadEvents(
+      parseGa4DimensionRows(previousEventsReport, "eventName", ["eventCount"])
+    );
+
+    previousConversionEventsCount = previousLeadEvents.reduce(
+      (sum, event) => sum + (safeNumber(event.eventCount) || 0),
+      0
+    );
+  }
+
+  const channelsReport = await runGa4Report({
+    propertyId: finalPropertyId,
+    dateRanges: [{ startDate, endDate }],
+    dimensions: ["sessionDefaultChannelGroup"],
+    metrics: ["sessions", "activeUsers", "eventCount"],
+    limit: rowLimit,
+    orderBys: [
+      {
+        metric: {
+          metricName: "sessions"
+        },
+        desc: true
+      }
+    ]
+  });
+
+  const topChannels = parseGa4DimensionRows(
+    channelsReport,
+    "sessionDefaultChannelGroup",
+    ["sessions", "activeUsers", "eventCount"]
+  );
+
+  const pagesReport = await runGa4Report({
+    propertyId: finalPropertyId,
+    dateRanges: [{ startDate, endDate }],
+    dimensions: ["pagePathPlusQueryString"],
+    metrics: ["screenPageViews", "activeUsers", "eventCount"],
+    limit: rowLimit,
+    orderBys: [
+      {
+        metric: {
+          metricName: "screenPageViews"
+        },
+        desc: true
+      }
+    ]
+  });
+
+  const topPages = parseGa4DimensionRows(
+    pagesReport,
+    "pagePathPlusQueryString",
+    ["screenPageViews", "activeUsers", "eventCount"]
+  );
+
+  return {
+    ok: true,
+    version: APP_VERSION,
+    source: "ga4",
+    property: {
+      propertyId: finalPropertyId,
+      propertyResourceName: `properties/${finalPropertyId}`,
+      propertyName: resolvedProperty?.propertyName || null,
+      accountName: resolvedProperty?.accountName || null,
+      matched_by: propertyId || propertyResourceName ? "propertyId" : "client_or_domain"
+    },
+    period: {
+      startDate,
+      endDate,
+      previousStartDate: previousStartDate || null,
+      previousEndDate: previousEndDate || null
+    },
+    summary: {
+      users: currentSummary.activeUsers,
+      total_users: currentSummary.totalUsers,
+      sessions: currentSummary.sessions,
+      engaged_sessions: currentSummary.engagedSessions,
+      event_count: currentSummary.eventCount,
+      engagement_rate: currentSummary.engagementRate,
+      page_views: currentSummary.screenPageViews,
+      conversions: conversionEventsCount,
+      previous_users: previousSummary?.activeUsers ?? null,
+      previous_total_users: previousSummary?.totalUsers ?? null,
+      previous_sessions: previousSummary?.sessions ?? null,
+      previous_engaged_sessions: previousSummary?.engagedSessions ?? null,
+      previous_event_count: previousSummary?.eventCount ?? null,
+      previous_engagement_rate: previousSummary?.engagementRate ?? null,
+      previous_page_views: previousSummary?.screenPageViews ?? null,
+      previous_conversions: previousConversionEventsCount
+    },
+    top_events: topEvents,
+    lead_events: leadEvents,
+    previous_lead_events: previousLeadEvents,
+    top_channels: topChannels,
+    top_pages: topPages,
+    resolved_assets: resolvedAssets
+      ? {
+          assets_count: resolvedAssets.assets_count,
+          matched: resolvedAssets.matched
+        }
+      : null
+  };
+}
+
 async function enrichInputWithSearchConsole(input) {
   let enrichedInput = { ...input };
 
+  const client = input.client || {};
   const searchConsoleInput = input.search_console || {};
 
+  const hasSearchConsoleDates =
+    searchConsoleInput.startDate &&
+    searchConsoleInput.endDate;
+
+  let siteUrl = searchConsoleInput.siteUrl;
+
+  if (!siteUrl && hasSearchConsoleDates && (client.domain || client.name)) {
+    try {
+      const resolvedAssets = await resolveGoogleAssetsForClient({
+        clientName: client.name,
+        domain: client.domain,
+        location: client.location
+      });
+
+      siteUrl = resolvedAssets.matched.search_console?.siteUrl;
+    } catch (error) {
+      siteUrl = null;
+    }
+  }
+
   const hasSearchConsoleRequest =
-    searchConsoleInput.siteUrl &&
+    siteUrl &&
     searchConsoleInput.startDate &&
     searchConsoleInput.endDate;
 
@@ -141,7 +732,7 @@ async function enrichInputWithSearchConsole(input) {
 
   try {
     const realSearchConsoleData = await getSearchConsoleMonthlyData({
-      siteUrl: searchConsoleInput.siteUrl,
+      siteUrl,
       startDate: searchConsoleInput.startDate,
       endDate: searchConsoleInput.endDate,
       previousStartDate: searchConsoleInput.previousStartDate,
@@ -179,12 +770,109 @@ async function enrichInputWithSearchConsole(input) {
       ...input,
       search_console: {
         ...searchConsoleInput,
+        siteUrl,
         real_data_loaded: false,
         source: "google_search_console",
         error: error.message
       }
     };
   }
+}
+
+async function enrichInputWithGa4(input) {
+  const client = input.client || {};
+  const ga4Input = input.ga4 || {};
+  const searchConsoleInput = input.search_console || {};
+
+  const startDate = ga4Input.startDate || searchConsoleInput.startDate;
+  const endDate = ga4Input.endDate || searchConsoleInput.endDate;
+  const previousStartDate = ga4Input.previousStartDate || searchConsoleInput.previousStartDate;
+  const previousEndDate = ga4Input.previousEndDate || searchConsoleInput.previousEndDate;
+
+  const hasDates = startDate && endDate;
+  const hasClientContext =
+    ga4Input.propertyId ||
+    ga4Input.propertyResourceName ||
+    client.domain ||
+    client.name ||
+    ga4Input.domain ||
+    ga4Input.clientName;
+
+  if (!hasDates || !hasClientContext) {
+    return input;
+  }
+
+  try {
+    const realGa4Data = await getGa4MonthlyData({
+      propertyId: ga4Input.propertyId,
+      propertyResourceName: ga4Input.propertyResourceName,
+      clientName: ga4Input.clientName || client.name,
+      domain: ga4Input.domain || client.domain,
+      location: ga4Input.location || client.location,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate,
+      rowLimit: ga4Input.rowLimit || 10
+    });
+
+    const summary = realGa4Data.summary || {};
+
+    return {
+      ...input,
+      ga4: {
+        ...ga4Input,
+        real_data_loaded: true,
+        source: "ga4",
+        propertyId: realGa4Data.property.propertyId,
+        propertyName: realGa4Data.property.propertyName,
+        accountName: realGa4Data.property.accountName,
+        period: realGa4Data.period,
+        users: summary.users,
+        previous_users: summary.previous_users,
+        total_users: summary.total_users,
+        previous_total_users: summary.previous_total_users,
+        sessions: summary.sessions,
+        previous_sessions: summary.previous_sessions,
+        engaged_sessions: summary.engaged_sessions,
+        previous_engaged_sessions: summary.previous_engaged_sessions,
+        event_count: summary.event_count,
+        previous_event_count: summary.previous_event_count,
+        engagement_rate: summary.engagement_rate,
+        previous_engagement_rate: summary.previous_engagement_rate,
+        page_views: summary.page_views,
+        previous_page_views: summary.previous_page_views,
+        conversions: summary.conversions,
+        previous_conversions: summary.previous_conversions,
+        top_events: realGa4Data.top_events || [],
+        lead_events: realGa4Data.lead_events || [],
+        previous_lead_events: realGa4Data.previous_lead_events || [],
+        top_channels: realGa4Data.top_channels || [],
+        top_pages: realGa4Data.top_pages || [],
+        raw_data: realGa4Data
+      }
+    };
+  } catch (error) {
+    return {
+      ...input,
+      ga4: {
+        ...ga4Input,
+        real_data_loaded: false,
+        source: "ga4",
+        startDate,
+        endDate,
+        previousStartDate,
+        previousEndDate,
+        error: error.message
+      }
+    };
+  }
+}
+
+async function enrichInputWithGoogleData(input) {
+  const withGa4 = await enrichInputWithGa4(input);
+  const withSearchConsole = await enrichInputWithSearchConsole(withGa4);
+  return withSearchConsole;
 }
 
 function buildMonthlyReport(data) {
@@ -203,6 +891,7 @@ function buildMonthlyReport(data) {
   const signals = [];
 
   const ga4Users = compare(ga4.users, ga4.previous_users);
+  const ga4Sessions = compare(ga4.sessions, ga4.previous_sessions);
   const ga4Conversions = compare(ga4.conversions, ga4.previous_conversions);
   const scClicks = compare(searchConsole.clicks, searchConsole.previous_clicks);
   const scImpressions = compare(searchConsole.impressions, searchConsole.previous_impressions);
@@ -214,16 +903,8 @@ function buildMonthlyReport(data) {
   const gbpCalls = compare(gbp.calls, gbp.previous_calls);
   const totalLeads = compare(crm.total_leads, crm.previous_total_leads);
 
-  const searchConsoleSignals = buildSearchConsoleSignals(searchConsole);
-  signals.push(...searchConsoleSignals);
-
-  if (ga4Users.trend === "sube") {
-    signals.push("Aumentan los usuarios en la web.");
-  }
-
-  if (ga4Conversions.trend === "sube") {
-    signals.push("Aumentan las conversiones registradas en GA4.");
-  }
+  signals.push(...buildGa4Signals(ga4));
+  signals.push(...buildSearchConsoleSignals(searchConsole));
 
   if (gbpCalls.trend === "sube") {
     signals.push("Aumentan las llamadas desde Google Business Profile.");
@@ -243,6 +924,12 @@ function buildMonthlyReport(data) {
 
   if (!data.ga4) {
     missingDataBlocks.push("No se han aportado datos de GA4.");
+  }
+
+  if (data.ga4?.real_data_loaded === false) {
+    missingDataBlocks.push(
+      `No se han podido cargar los datos reales de GA4: ${data.ga4.error || "error no especificado"}.`
+    );
   }
 
   if (!data.google_business_profile) {
@@ -301,6 +988,9 @@ function buildMonthlyReport(data) {
     ok: true,
     generated_at: new Date().toISOString(),
     data_enrichment: {
+      ga4_real_data_loaded: ga4.real_data_loaded ?? false,
+      ga4_propertyId: ga4.propertyId || null,
+      ga4_propertyName: ga4.propertyName || null,
       search_console_real_data_loaded: searchConsole.real_data_loaded ?? false,
       search_console_siteUrl: searchConsole.siteUrl || null,
       missing_data_blocks: missingDataBlocks
@@ -309,6 +999,7 @@ function buildMonthlyReport(data) {
       name: client.name || "Cliente sin nombre",
       sector: client.sector || null,
       location: client.location || null,
+      domain: client.domain || null,
       priority_services: client.priority_services || []
     },
     period: {
@@ -317,9 +1008,20 @@ function buildMonthlyReport(data) {
     },
     metrics_summary: {
       ga4: {
+        real_data_loaded: ga4.real_data_loaded ?? false,
+        propertyId: ga4.propertyId || null,
+        propertyName: ga4.propertyName || null,
         users: ga4Users,
-        sessions: compare(ga4.sessions, ga4.previous_sessions),
-        conversions: ga4Conversions
+        sessions: ga4Sessions,
+        engaged_sessions: compare(ga4.engaged_sessions, ga4.previous_engaged_sessions),
+        page_views: compare(ga4.page_views, ga4.previous_page_views),
+        event_count: compare(ga4.event_count, ga4.previous_event_count),
+        conversions: ga4Conversions,
+        engagement_rate: compare(ga4.engagement_rate, ga4.previous_engagement_rate),
+        top_channels: Array.isArray(ga4.top_channels) ? ga4.top_channels : [],
+        top_pages: Array.isArray(ga4.top_pages) ? ga4.top_pages : [],
+        top_events: Array.isArray(ga4.top_events) ? ga4.top_events : [],
+        lead_events: Array.isArray(ga4.lead_events) ? ga4.lead_events : []
       },
       search_console: {
         real_data_loaded: searchConsole.real_data_loaded ?? false,
@@ -362,6 +1064,16 @@ function buildMonthlyReport(data) {
         "En SEO local, los resultados suelen consolidarse de forma progresiva, especialmente cuando se crean nuevas páginas, se optimizan activos y se mejora la captación."
       ],
       senales_positivas: signals,
+      lectura_ga4: ga4.real_data_loaded
+        ? [
+            `Usuarios activos: ${ga4Users.current ?? "sin dato"} frente a ${ga4Users.previous ?? "sin dato"} del periodo anterior.`,
+            `Sesiones: ${ga4Sessions.current ?? "sin dato"} frente a ${ga4Sessions.previous ?? "sin dato"} del periodo anterior.`,
+            `Eventos de contacto/conversión detectados: ${ga4Conversions.current ?? "sin dato"} frente a ${ga4Conversions.previous ?? "sin dato"} del periodo anterior.`,
+            `Propiedad GA4 utilizada: ${ga4.propertyName || ga4.propertyId || "sin identificar"}.`
+          ]
+        : [
+            "No se han cargado datos reales de GA4 para este informe."
+          ],
       lectura_search_console: searchConsole.real_data_loaded
         ? [
             `Clics orgánicos: ${scClicks.current ?? "sin dato"} frente a ${scClicks.previous ?? "sin dato"} del periodo anterior.`,
@@ -372,6 +1084,15 @@ function buildMonthlyReport(data) {
         : [
             "No se han cargado datos reales de Search Console para este informe."
           ],
+      canales_principales_ga4: Array.isArray(ga4.top_channels) && ga4.top_channels.length
+        ? ga4.top_channels
+        : ["No se han detectado canales principales de GA4."],
+      paginas_principales_ga4: Array.isArray(ga4.top_pages) && ga4.top_pages.length
+        ? ga4.top_pages
+        : ["No se han detectado páginas principales de GA4."],
+      eventos_principales_ga4: Array.isArray(ga4.top_events) && ga4.top_events.length
+        ? ga4.top_events
+        : ["No se han detectado eventos principales de GA4."],
       consultas_principales: topQueries.length
         ? topQueries.slice(0, 10)
         : ["No se han detectado consultas principales de Search Console."],
@@ -394,9 +1115,10 @@ function buildMonthlyReport(data) {
         : ["Feedback sobre la calidad de los leads recibidos.", "Confirmación de servicios y zonas prioritarias."]
     },
     internal_summary_for_cleanify: {
-      lectura_real_del_mes: searchConsole.real_data_loaded
-        ? "Search Console se ha cargado correctamente. Revisar si el aumento de visibilidad se está convirtiendo en tráfico cualificado y oportunidades comerciales."
-        : "No se ha podido cargar Search Console dentro del informe. Revisar siteUrl, permisos y fechas.",
+      lectura_real_del_mes:
+        ga4.real_data_loaded || searchConsole.real_data_loaded
+          ? "Se han cargado datos reales desde Google. Revisar si la visibilidad y el tráfico se están convirtiendo en oportunidades comerciales."
+          : "No se han podido cargar datos reales suficientes. Revisar permisos, activos resueltos, fechas y propiedad del cliente.",
       riesgos_o_bloqueos: [
         ...missingDataBlocks,
         "Datos incompletos o sin comparativa pueden limitar la lectura.",
@@ -407,6 +1129,7 @@ function buildMonthlyReport(data) {
         "Llamadas perdidas.",
         "Páginas con muchas impresiones y pocos clics.",
         "Consultas con posición media entre 5 y 15.",
+        "Canales de GA4 con tráfico pero baja conversión.",
         "Servicios o zonas con mejor conversión."
       ],
       que_debe_decir_account_manager: "Explicar el avance con calma: qué se ha construido, qué señales empiezan a verse y qué se priorizará el próximo mes.",
@@ -427,7 +1150,7 @@ function createMcpServer() {
     {
       title: "Generar informe mensual de cliente",
       description:
-        "Genera un informe mensual para clientes o proyectos de Cleanify. Si search_console incluye siteUrl, startDate y endDate, esta herramienta consulta datos reales de Google Search Console antes de generar el informe.",
+        "Genera un informe mensual para clientes o proyectos de Cleanify. Si el input incluye fechas y cliente/dominio, intenta resolver y cargar datos reales de GA4 y Search Console antes de generar el informe.",
       inputSchema: {
         client: z.object({
           name: z.string().describe("Nombre del cliente o proyecto"),
@@ -440,9 +1163,11 @@ function createMcpServer() {
           month: z.string().optional(),
           previous_month: z.string().optional()
         }).optional(),
-        ga4: z.record(z.any()).optional(),
+        ga4: z.record(z.any()).optional().describe(
+          "Puede incluir propertyId, startDate, endDate, previousStartDate y previousEndDate. Si no incluye propertyId, el agente intenta resolverlo por client.domain o client.name."
+        ),
         search_console: z.record(z.any()).optional().describe(
-          "Puede incluir datos manuales o una petición de datos reales con siteUrl, startDate, endDate, previousStartDate y previousEndDate."
+          "Puede incluir datos manuales o una petición de datos reales con siteUrl, startDate, endDate, previousStartDate y previousEndDate. Si falta siteUrl, intenta resolverlo por client.domain."
         ),
         google_business_profile: z.record(z.any()).optional(),
         calls: z.record(z.any()).optional(),
@@ -454,7 +1179,7 @@ function createMcpServer() {
       }
     },
     async (input) => {
-      const enrichedInput = await enrichInputWithSearchConsole(input);
+      const enrichedInput = await enrichInputWithGoogleData(input);
       const report = buildMonthlyReport(enrichedInput);
 
       return {
@@ -505,6 +1230,77 @@ function createMcpServer() {
     }
   );
 
+  server.registerTool(
+    "getGa4MonthlyData",
+    {
+      title: "Obtener datos mensuales de GA4",
+      description:
+        "Consulta datos reales de GA4 para una propiedad y rango de fechas. Puede resolver la propiedad por propertyId, dominio o nombre de cliente.",
+      inputSchema: {
+        propertyId: z.string().optional().describe("ID de propiedad GA4, por ejemplo 526346028"),
+        clientName: z.string().optional().describe("Nombre del cliente si no se conoce propertyId"),
+        domain: z.string().optional().describe("Dominio del cliente si no se conoce propertyId, por ejemplo econeta.es"),
+        location: z.string().optional(),
+        startDate: z.string().describe("Fecha inicial del periodo actual en formato YYYY-MM-DD"),
+        endDate: z.string().describe("Fecha final del periodo actual en formato YYYY-MM-DD"),
+        previousStartDate: z.string().optional().describe("Fecha inicial del periodo anterior en formato YYYY-MM-DD"),
+        previousEndDate: z.string().optional().describe("Fecha final del periodo anterior en formato YYYY-MM-DD")
+      }
+    },
+    async (input) => {
+      const data = await getGa4MonthlyData({
+        propertyId: input.propertyId,
+        clientName: input.clientName,
+        domain: input.domain,
+        location: input.location,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        previousStartDate: input.previousStartDate,
+        previousEndDate: input.previousEndDate,
+        rowLimit: 10
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(data, null, 2)
+          }
+        ],
+        structuredContent: data
+      };
+    }
+  );
+
+  server.registerTool(
+    "resolveGoogleAssetsForClient",
+    {
+      title: "Resolver activos Google de un cliente",
+      description:
+        "Busca qué propiedad de Search Console y qué propiedad GA4 corresponden a un cliente según nombre, dominio o ubicación.",
+      inputSchema: {
+        clientName: z.string().optional(),
+        domain: z.string().optional(),
+        location: z.string().optional(),
+        propertyId: z.string().optional(),
+        siteUrl: z.string().optional()
+      }
+    },
+    async (input) => {
+      const data = await resolveGoogleAssetsForClient(input);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(data, null, 2)
+          }
+        ],
+        structuredContent: data
+      };
+    }
+  );
+
   return server;
 }
 
@@ -521,6 +1317,7 @@ app.get("/health", (req, res) => {
       google_assets: `${BASE_URL}/google/assets`,
       google_resolve_assets: `${BASE_URL}/google/resolve-assets`,
       google_test: `${BASE_URL}/google/test`,
+      ga4_monthly: `${BASE_URL}/ga4/monthly`,
       search_console_monthly: `${BASE_URL}/search-console/monthly`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
       mcp: `${BASE_URL}/mcp`
@@ -541,6 +1338,7 @@ app.get("/debug/routes", (req, res) => {
       "GET /google/test",
       "GET /google/assets",
       "GET /google/resolve-assets",
+      "GET /ga4/monthly",
       "GET /search-console/monthly",
       "POST /api/report/monthly",
       "POST /mcp",
@@ -698,12 +1496,14 @@ app.get("/google/assets", async (req, res) => {
 
 app.get("/google/resolve-assets", async (req, res) => {
   try {
-    const { clientName, domain, location } = req.query;
+    const { clientName, domain, location, propertyId, siteUrl } = req.query;
 
-    const resolution = await resolveClientAssets({
+    const resolution = await resolveGoogleAssetsForClient({
       clientName,
       domain,
-      location
+      location,
+      propertyId,
+      siteUrl
     });
 
     return res.json({
@@ -719,6 +1519,52 @@ app.get("/google/resolve-assets", async (req, res) => {
       version: APP_VERSION,
       source: "google_assets_resolver",
       error: "No se pudieron resolver los activos del cliente/proyecto.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/ga4/monthly", async (req, res) => {
+  try {
+    const {
+      propertyId,
+      propertyResourceName,
+      clientName,
+      domain,
+      location,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate,
+      rowLimit
+    } = req.query;
+
+    const data = await getGa4MonthlyData({
+      propertyId,
+      propertyResourceName,
+      clientName,
+      domain,
+      location,
+      startDate,
+      endDate,
+      previousStartDate,
+      previousEndDate,
+      rowLimit: safeNumber(rowLimit) || 10
+    });
+
+    return res.json({
+      ok: true,
+      version: APP_VERSION,
+      source: "ga4",
+      data
+    });
+  } catch (error) {
+    console.error("Error consultando GA4 mensual:", error);
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "ga4",
+      error: "No se pudo consultar GA4.",
       details: error.message
     });
   }
@@ -773,24 +1619,29 @@ app.post("/api/report/monthly", async (req, res) => {
       });
     }
 
-    const enrichedInput = await enrichInputWithSearchConsole(data);
+    const enrichedInput = await enrichInputWithGoogleData(data);
     const report = buildMonthlyReport(enrichedInput);
 
     return res.json({
-      route_version: "api-report-monthly-enriched-2026-05-21",
+      route_version: "api-report-monthly-ga4-search-console-2026-05-22",
       version: APP_VERSION,
       enrichment_input_received: {
+        has_ga4: Boolean(data.ga4),
         has_search_console: Boolean(data.search_console),
-        siteUrl: data.search_console?.siteUrl || null,
-        startDate: data.search_console?.startDate || null,
-        endDate: data.search_console?.endDate || null
+        client_name: data.client?.name || null,
+        client_domain: data.client?.domain || null,
+        ga4_propertyId: enrichedInput.ga4?.propertyId || data.ga4?.propertyId || null,
+        ga4_loaded: enrichedInput.ga4?.real_data_loaded ?? false,
+        search_console_siteUrl: enrichedInput.search_console?.siteUrl || data.search_console?.siteUrl || null,
+        search_console_loaded: enrichedInput.search_console?.real_data_loaded ?? false
       },
+      ga4_loaded: report.data_enrichment?.ga4_real_data_loaded ?? false,
       search_console_loaded: report.data_enrichment?.search_console_real_data_loaded ?? false,
       report
     });
   } catch (error) {
     return res.status(500).json({
-      route_version: "api-report-monthly-enriched-2026-05-21",
+      route_version: "api-report-monthly-ga4-search-console-2026-05-22",
       version: APP_VERSION,
       ok: false,
       error: "Error generando el informe mensual.",
@@ -837,7 +1688,7 @@ app.get("/openapi.json", (req, res) => {
       title: "Cleanify Reporting Agent API",
       version: APP_VERSION,
       description:
-        "API para convertir datos mensuales de marketing local en una estructura de informe para clientes y proyectos de Cleanify."
+        "API para convertir datos mensuales de marketing local en una estructura de informe para clientes y proyectos de Cleanify. Integra resolución de activos Google, Search Console y GA4."
     },
     servers: [
       {
@@ -856,12 +1707,157 @@ app.get("/openapi.json", (req, res) => {
           }
         }
       },
+      "/google/assets": {
+        get: {
+          operationId: "listGoogleAssets",
+          summary: "Listar activos disponibles de Search Console y GA4.",
+          responses: {
+            "200": {
+              description: "Listado de activos Google disponibles."
+            }
+          }
+        }
+      },
+      "/google/resolve-assets": {
+        get: {
+          operationId: "resolveGoogleAssets",
+          summary: "Resolver activos Google por cliente o dominio.",
+          parameters: [
+            {
+              name: "clientName",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "domain",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "location",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            }
+          ],
+          responses: {
+            "200": {
+              description: "Activos resueltos."
+            }
+          }
+        }
+      },
+      "/ga4/monthly": {
+        get: {
+          operationId: "getGa4MonthlyData",
+          summary: "Obtener datos mensuales reales de GA4.",
+          description:
+            "Consulta GA4 por propertyId o intenta resolver la propiedad a partir de clientName/domain. Devuelve usuarios, sesiones, eventos, canales, páginas y eventos de contacto detectados.",
+          parameters: [
+            {
+              name: "propertyId",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "clientName",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "domain",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "startDate",
+              in: "query",
+              required: true,
+              schema: { type: "string" }
+            },
+            {
+              name: "endDate",
+              in: "query",
+              required: true,
+              schema: { type: "string" }
+            },
+            {
+              name: "previousStartDate",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "previousEndDate",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            }
+          ],
+          responses: {
+            "200": {
+              description: "Datos mensuales GA4."
+            },
+            "500": {
+              description: "Error consultando GA4."
+            }
+          }
+        }
+      },
+      "/search-console/monthly": {
+        get: {
+          operationId: "getSearchConsoleMonthlyData",
+          summary: "Obtener datos mensuales reales de Search Console.",
+          parameters: [
+            {
+              name: "siteUrl",
+              in: "query",
+              required: true,
+              schema: { type: "string" }
+            },
+            {
+              name: "startDate",
+              in: "query",
+              required: true,
+              schema: { type: "string" }
+            },
+            {
+              name: "endDate",
+              in: "query",
+              required: true,
+              schema: { type: "string" }
+            },
+            {
+              name: "previousStartDate",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            },
+            {
+              name: "previousEndDate",
+              in: "query",
+              required: false,
+              schema: { type: "string" }
+            }
+          ],
+          responses: {
+            "200": {
+              description: "Datos mensuales Search Console."
+            }
+          }
+        }
+      },
       "/api/report/monthly": {
         post: {
           operationId: "generateMonthlyReport",
           summary: "Generar estructura de informe mensual para un cliente o proyecto.",
           description:
-            "Recibe datos de GA4, Search Console, Google Business Profile, llamadas, formularios, CRM y tareas realizadas. Si Search Console incluye siteUrl, startDate y endDate, intenta cargar datos reales desde Google Search Console.",
+            "Recibe contexto del cliente, fechas, tareas y datos comerciales. Si hay fechas y cliente/dominio, intenta cargar datos reales desde GA4 y Search Console.",
           requestBody: {
             required: true,
             content: {
@@ -890,7 +1886,16 @@ app.get("/openapi.json", (req, res) => {
                         previous_month: { type: "string" }
                       }
                     },
-                    ga4: { type: "object" },
+                    ga4: {
+                      type: "object",
+                      properties: {
+                        propertyId: { type: "string" },
+                        startDate: { type: "string" },
+                        endDate: { type: "string" },
+                        previousStartDate: { type: "string" },
+                        previousEndDate: { type: "string" }
+                      }
+                    },
                     search_console: {
                       type: "object",
                       properties: {
