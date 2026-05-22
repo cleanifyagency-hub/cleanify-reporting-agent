@@ -1694,7 +1694,8 @@ app.get("/health", (req, res) => {
       ga4_monthly: `${BASE_URL}/ga4/monthly`,
       search_console_monthly: `${BASE_URL}/search-console/monthly`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
-      mcp: `${BASE_URL}/mcp`
+monthly_report_html: `${BASE_URL}/api/report/monthly/html`,
+mcp: `${BASE_URL}/mcp`
     }
   });
 });
