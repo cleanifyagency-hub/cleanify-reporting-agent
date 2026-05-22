@@ -14,7 +14,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = "https://reportes.cleanify.agency";
-const APP_VERSION = "1.4.0-ga4";
+const APP_VERSION = "1.5.0-final-report";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -1139,6 +1139,180 @@ function buildMonthlyReport(data) {
   };
 }
 
+function formatPercent(value) {
+  const number = safeNumber(value);
+  if (number === null) return "sin dato";
+  return `${(number * 100).toFixed(1).replace(".", ",")}%`;
+}
+
+function formatMetricCompare(metric, label, suffix = "") {
+  if (!metric || metric.current === null || metric.current === undefined) {
+    return `${label}: sin dato disponible.`;
+  }
+
+  const current = `${metric.current}${suffix}`;
+  const previous = metric.previous === null || metric.previous === undefined
+    ? "sin comparativa"
+    : `${metric.previous}${suffix}`;
+
+  if (metric.percent_change === null || metric.percent_change === undefined) {
+    return `${label}: ${current} frente a ${previous}.`;
+  }
+
+  const sign = metric.percent_change > 0 ? "+" : "";
+  return `${label}: ${current} frente a ${previous} (${sign}${metric.percent_change}%).`;
+}
+
+function listToMarkdown(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "- Sin datos disponibles.";
+  }
+
+  return items.map((item) => {
+    if (typeof item === "string") return `- ${item}`;
+    return `- ${JSON.stringify(item)}`;
+  }).join("\n");
+}
+
+function buildFinalReportOutputs(report) {
+  const client = report.client || {};
+  const period = report.period || {};
+  const sections = report.client_report_sections || {};
+  const metrics = report.metrics_summary || {};
+  const ga4 = metrics.ga4 || {};
+  const searchConsole = metrics.search_console || {};
+  const internal = report.internal_summary_for_cleanify || {};
+
+  const clientName = client.name || "Cliente";
+  const month = period.month || "este mes";
+
+  const ga4Users = formatMetricCompare(ga4.users, "Usuarios activos");
+  const ga4Sessions = formatMetricCompare(ga4.sessions, "Sesiones");
+  const ga4Conversions = formatMetricCompare(ga4.conversions, "Eventos de contacto detectados");
+  const ga4EngagementRate = ga4.engagement_rate
+    ? `Engagement rate: ${formatPercent(ga4.engagement_rate.current)} frente a ${formatPercent(ga4.engagement_rate.previous)}.`
+    : "Engagement rate: sin dato disponible.";
+
+  const scClicks = formatMetricCompare(searchConsole.clicks, "Clics orgánicos");
+  const scImpressions = formatMetricCompare(searchConsole.impressions, "Impresiones");
+  const scCtr = searchConsole.ctr
+    ? `CTR: ${formatPercent(searchConsole.ctr.current)} frente a ${formatPercent(searchConsole.ctr.previous)}.`
+    : "CTR: sin dato disponible.";
+  const scPosition = searchConsole.average_position
+    ? formatMetricCompare(searchConsole.average_position, "Posición media")
+    : "Posición media: sin dato disponible.";
+
+  const clientReportMarkdown = `# Informe mensual · ${clientName}
+
+Periodo: ${month}
+
+## 1. Resumen del mes
+
+${sections.resumen_del_mes || `Durante ${month}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`}
+
+Este mes ya contamos con lectura real de GA4 y Search Console, lo que nos permite revisar tanto el comportamiento de la web como la visibilidad orgánica en Google. La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.
+
+## 2. Qué se ha hecho este mes
+
+${listToMarkdown(sections.que_se_ha_hecho)}
+
+Estas acciones son importantes porque ayudan a ordenar la medición, entender mejor qué canales están generando actividad y preparar una lectura más clara del avance del proyecto.
+
+## 3. Resultados y señales positivas
+
+### GA4 · Tráfico y comportamiento web
+
+- ${ga4Users}
+- ${ga4Sessions}
+- ${ga4Conversions}
+- ${ga4EngagementRate}
+
+La web ya está generando datos suficientes para revisar usuarios, sesiones, páginas principales y eventos. Aunque este mes no se observa un crecimiento fuerte frente al periodo anterior, sí tenemos una base de medición útil para detectar qué páginas reciben visitas y qué acciones conviene reforzar.
+
+### Search Console · Visibilidad orgánica
+
+- ${scClicks}
+- ${scImpressions}
+- ${scCtr}
+- ${scPosition}
+
+En Search Console vemos que todavía hay margen de mejora en visibilidad y posiciones. Esto no debe interpretarse como un problema aislado, sino como una señal de que debemos seguir reforzando páginas, contenidos, intención de búsqueda y optimización de snippets para convertir más apariciones en clics.
+
+### Señales destacadas
+
+${listToMarkdown(sections.senales_positivas)}
+
+## 4. Qué todavía necesita tiempo
+
+${listToMarkdown(sections.que_necesita_tiempo)}
+
+En SEO local, las mejoras no siempre se traducen de forma inmediata en llamadas o formularios. Primero suelen aparecer señales de rastreo, indexación, impresiones, pequeñas entradas de tráfico y consultas nuevas. El objetivo es convertir esas señales iniciales en oportunidades más constantes.
+
+## 5. Qué haremos el próximo mes
+
+${listToMarkdown(sections.proximo_mes)}
+
+## 6. Qué necesitamos de vosotros
+
+${listToMarkdown(sections.necesitamos_del_cliente)}
+
+## 7. Cierre
+
+El proyecto sigue avanzando con una base de medición más clara. El siguiente paso será utilizar estos datos para priorizar mejor las acciones: revisar páginas con potencial, reforzar servicios importantes, corregir posibles fricciones y conectar cada vez mejor la visibilidad con contactos reales.`;
+
+  const internalSummaryMarkdown = `# Resumen interno Cleanify · ${clientName}
+
+## Lectura real del mes
+
+${internal.lectura_real_del_mes || "Se han cargado datos reales y conviene revisar la relación entre visibilidad, tráfico y oportunidades comerciales."}
+
+## Riesgos o bloqueos
+
+${listToMarkdown(internal.riesgos_o_bloqueos)}
+
+## Qué conviene vigilar
+
+${listToMarkdown(internal.que_vigilar)}
+
+## Qué debería decir el account manager
+
+${internal.que_debe_decir_account_manager || "Explicar el avance con calma, reforzando qué se ha trabajado, qué señales existen y cuál será el foco del próximo mes."}
+
+## Qué no conviene prometer
+
+${internal.que_no_conviene_prometer || "No prometer posiciones, leads garantizados ni resultados inmediatos."}
+
+## Próxima acción prioritaria
+
+${internal.proxima_accion_prioritaria || "Definir la acción de mayor impacto para el próximo mes."}`;
+
+  const emailSubjects = [
+    `Informe mensual de ${clientName} · Avances y próximos pasos`,
+    `Resumen de trabajo y evolución del mes · ${clientName}`,
+    `Avances SEO local y captación · ${clientName}`
+  ];
+
+  const emailBody = `Hola,
+
+Te compartimos el informe mensual de ${clientName}, con el resumen de trabajo realizado, las principales señales que estamos viendo y el foco previsto para el próximo mes.
+
+Este mes ya contamos con datos reales de GA4 y Search Console, lo que nos ayuda a interpretar mejor la evolución de la web y la visibilidad orgánica. Como verás, el objetivo no es solo revisar métricas, sino entender qué se está construyendo, qué empieza a moverse y qué acciones pueden ayudarnos a seguir mejorando la captación.
+
+También hemos incluido algunos puntos en los que vuestra ayuda puede acelerar el avance, especialmente en prioridades comerciales, feedback de contactos y materiales reales de trabajos.
+
+Cualquier duda, lo revisamos juntos.
+
+Un saludo,
+El equipo de Cleanify`;
+
+  return {
+    client_report_markdown: clientReportMarkdown,
+    internal_summary_markdown: internalSummaryMarkdown,
+    email_subjects: emailSubjects,
+    email_body: emailBody
+  };
+}
+
 function createMcpServer() {
   const server = new McpServer({
     name: "cleanify-reporting-agent",
@@ -1621,8 +1795,9 @@ app.post("/api/report/monthly", async (req, res) => {
 
     const enrichedInput = await enrichInputWithGoogleData(data);
     const report = buildMonthlyReport(enrichedInput);
+const final_outputs = buildFinalReportOutputs(report);
 
-    return res.json({
+return res.json({
       route_version: "api-report-monthly-ga4-search-console-2026-05-22",
       version: APP_VERSION,
       enrichment_input_received: {
@@ -1635,8 +1810,9 @@ app.post("/api/report/monthly", async (req, res) => {
         search_console_siteUrl: enrichedInput.search_console?.siteUrl || data.search_console?.siteUrl || null,
         search_console_loaded: enrichedInput.search_console?.real_data_loaded ?? false
       },
-      ga4_loaded: report.data_enrichment?.ga4_real_data_loaded ?? false,
+           ga4_loaded: report.data_enrichment?.ga4_real_data_loaded ?? false,
       search_console_loaded: report.data_enrichment?.search_console_real_data_loaded ?? false,
+      final_outputs,
       report
     });
   } catch (error) {
