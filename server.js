@@ -6,6 +6,10 @@ import {
 import { getSearchConsoleMonthlyData } from "./google-search-console.js";
 import { listAvailableAssets, resolveClientAssets } from "./google-assets.js";
 import express from "express";
+import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -14,9 +18,13 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = "https://reportes.cleanify.agency";
-const APP_VERSION = "1.5.0-final-report";
+const APP_VERSION = "1.7.0-pdf-report-package";
 
 app.use(express.json({ limit: "4mb" }));
+
+const REPORTS_DIR = process.env.REPORTS_DIR || "/tmp/cleanify-reports";
+const CLEANIFY_LOGO_URL = process.env.CLEANIFY_LOGO_URL || "";
+
 
 function safeNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -40,6 +48,354 @@ function normalizeDomain(value) {
     .replace(/^sc-domain:/, "")
     .replace(/\/$/, "")
     .trim();
+}
+
+const MONTHS_ES = {
+  enero: 0,
+  febrero: 1,
+  marzo: 2,
+  abril: 3,
+  mayo: 4,
+  junio: 5,
+  julio: 6,
+  agosto: 7,
+  septiembre: 8,
+  setiembre: 8,
+  octubre: 9,
+  noviembre: 10,
+  diciembre: 11
+};
+
+const MONTH_LABELS_ES = [
+  "enero",
+  "febrero",
+  "marzo",
+  "abril",
+  "mayo",
+  "junio",
+  "julio",
+  "agosto",
+  "septiembre",
+  "octubre",
+  "noviembre",
+  "diciembre"
+];
+
+const CLIENT_DIRECTORY = [
+  {
+    aliases: ["island servi", "islandservi", "island service", "islandservi.com"],
+    name: "Island Servi",
+    domain: "islandservi.com",
+    ga4PropertyId: "527890206",
+    searchConsoleSiteUrl: "https://islandservi.com/",
+    sector: "Empresa de limpieza y servicios auxiliares",
+    location: "Canarias",
+    priorityServices: [
+      "limpieza",
+      "limpieza de obras",
+      "servicios auxiliares",
+      "eventos",
+      "productoras y rodajes"
+    ]
+  },
+  {
+    aliases: ["econeta", "econeta.es"],
+    name: "Econeta",
+    domain: "econeta.es",
+    ga4PropertyId: "526346028",
+    searchConsoleSiteUrl: "https://econeta.es/",
+    sector: "Empresa de limpieza",
+    location: "Tarragona"
+  },
+  {
+    aliases: ["bioneteja", "bioneteja.es"],
+    name: "Bioneteja",
+    domain: "bioneteja.es",
+    ga4PropertyId: "514390669",
+    searchConsoleSiteUrl: "https://bioneteja.es/",
+    sector: "Empresa de limpieza"
+  },
+  {
+    aliases: ["chococlean", "choco clean", "chococlean.net"],
+    name: "ChocoClean",
+    domain: "chococlean.net",
+    ga4PropertyId: "526871968",
+    searchConsoleSiteUrl: "https://chococlean.net/",
+    sector: "Empresa de limpieza"
+  },
+  {
+    aliases: ["limpio y clic", "limpio&clic", "limpio clic", "limpioyclic", "limpioyclic.es"],
+    name: "Limpio&Clic",
+    domain: "limpioyclic.es",
+    ga4PropertyId: "529777178",
+    searchConsoleSiteUrl: "sc-domain:limpioyclic.es",
+    sector: "Empresa de limpieza"
+  },
+  {
+    aliases: ["tintorerias charo", "tintorerías charo", "tintoreriascharo", "tintoreriascharo.es"],
+    name: "Tintorerías Charo",
+    domain: "tintoreriascharo.es",
+    ga4PropertyId: "471906677",
+    searchConsoleSiteUrl: "https://tintoreriascharo.es/",
+    sector: "Tintorería"
+  },
+  {
+    aliases: ["perez sierra", "pérez sierra", "limpiezas perez sierra", "limpiezasperezsierra.com"],
+    name: "Limpiezas Pérez Sierra",
+    domain: "limpiezasperezsierra.com",
+    ga4PropertyId: "522886852",
+    searchConsoleSiteUrl: "http://limpiezasperezsierra.com/",
+    sector: "Empresa de limpieza"
+  }
+];
+
+function findKnownClient(input = {}) {
+  const client = input.client || {};
+
+  const candidates = [
+    input.clientName,
+    input.name,
+    input.client_name,
+    input.projectName,
+    input.project_name,
+    input.domain,
+    input.clientDomain,
+    input.client_domain,
+    client.name,
+    client.domain,
+    input.search_console?.siteUrl,
+    input.searchConsoleSiteUrl,
+    input.siteUrl
+  ].filter(Boolean);
+
+  const normalizedCandidates = candidates.map((candidate) => ({
+    text: normalizeText(candidate),
+    domain: normalizeDomain(candidate)
+  }));
+
+  return CLIENT_DIRECTORY.find((known) => {
+    const knownAliases = (known.aliases || []).map(normalizeText);
+    const knownDomains = [
+      known.domain,
+      known.searchConsoleSiteUrl,
+      ...(known.aliases || [])
+    ].map(normalizeDomain);
+
+    return normalizedCandidates.some((candidate) => {
+      return (
+        knownAliases.some((alias) =>
+          alias &&
+          (
+            candidate.text === alias ||
+            candidate.text.includes(alias) ||
+            alias.includes(candidate.text)
+          )
+        ) ||
+        knownDomains.some((domain) =>
+          domain &&
+          (
+            candidate.domain === domain ||
+            candidate.domain.includes(domain) ||
+            domain.includes(candidate.domain)
+          )
+        )
+      );
+    });
+  }) || null;
+}
+
+function formatDateYYYYMMDD(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getMonthDateRange(year, monthIndex) {
+  const start = new Date(Date.UTC(year, monthIndex, 1));
+  const end = new Date(Date.UTC(year, monthIndex + 1, 0));
+  return {
+    startDate: formatDateYYYYMMDD(start),
+    endDate: formatDateYYYYMMDD(end)
+  };
+}
+
+function monthLabel(year, monthIndex) {
+  return `${MONTH_LABELS_ES[monthIndex]} ${year}`;
+}
+
+function parseMonthAndYear(input = {}) {
+  const period = input.period || {};
+  const rawMonth =
+    input.month ||
+    input.reportMonth ||
+    input.report_month ||
+    period.month ||
+    "";
+
+  const rawYear =
+    input.year ||
+    input.reportYear ||
+    input.report_year ||
+    "";
+
+  if (Number.isInteger(Number(rawMonth)) && Number(rawMonth) >= 1 && Number(rawMonth) <= 12) {
+    const year = Number(rawYear) || new Date().getUTCFullYear();
+    return {
+      year,
+      monthIndex: Number(rawMonth) - 1
+    };
+  }
+
+  const normalized = normalizeText(rawMonth);
+  const yearMatch = normalized.match(/\b(20\d{2})\b/);
+  const parsedYear = Number(rawYear) || (yearMatch ? Number(yearMatch[1]) : null);
+
+  const monthEntry = Object.entries(MONTHS_ES).find(([name]) =>
+    normalized.includes(name)
+  );
+
+  if (!monthEntry || !parsedYear) {
+    return null;
+  }
+
+  return {
+    year: parsedYear,
+    monthIndex: monthEntry[1]
+  };
+}
+
+function deriveMonthlyDatesFromInput(input = {}) {
+  const parsed = parseMonthAndYear(input);
+  if (!parsed) return null;
+
+  const current = getMonthDateRange(parsed.year, parsed.monthIndex);
+  const previousDate = new Date(Date.UTC(parsed.year, parsed.monthIndex - 1, 1));
+  const previousYear = previousDate.getUTCFullYear();
+  const previousMonthIndex = previousDate.getUTCMonth();
+  const previous = getMonthDateRange(previousYear, previousMonthIndex);
+
+  return {
+    month: monthLabel(parsed.year, parsed.monthIndex),
+    previous_month: monthLabel(previousYear, previousMonthIndex),
+    startDate: current.startDate,
+    endDate: current.endDate,
+    previousStartDate: previous.startDate,
+    previousEndDate: previous.endDate
+  };
+}
+
+function prepareReportInput(input = {}) {
+  const knownClient = findKnownClient(input);
+  const derivedDates = deriveMonthlyDatesFromInput(input);
+
+  const client = input.client || {};
+  const ga4Input = input.ga4 || {};
+  const searchConsoleInput = input.search_console || {};
+
+  const domain =
+    client.domain ||
+    input.domain ||
+    input.clientDomain ||
+    input.client_domain ||
+    knownClient?.domain ||
+    null;
+
+  const clientName =
+    client.name ||
+    input.clientName ||
+    input.client_name ||
+    input.name ||
+    knownClient?.name ||
+    null;
+
+  const finalClient = {
+    ...client,
+    name: clientName || "Cliente sin nombre",
+    sector: client.sector || input.sector || knownClient?.sector || null,
+    location: client.location || input.location || knownClient?.location || null,
+    domain,
+    priority_services:
+      client.priority_services ||
+      input.priority_services ||
+      input.priorityServices ||
+      knownClient?.priorityServices ||
+      []
+  };
+
+  const startDate =
+    ga4Input.startDate ||
+    searchConsoleInput.startDate ||
+    input.startDate ||
+    derivedDates?.startDate;
+
+  const endDate =
+    ga4Input.endDate ||
+    searchConsoleInput.endDate ||
+    input.endDate ||
+    derivedDates?.endDate;
+
+  const previousStartDate =
+    ga4Input.previousStartDate ||
+    searchConsoleInput.previousStartDate ||
+    input.previousStartDate ||
+    derivedDates?.previousStartDate;
+
+  const previousEndDate =
+    ga4Input.previousEndDate ||
+    searchConsoleInput.previousEndDate ||
+    input.previousEndDate ||
+    derivedDates?.previousEndDate;
+
+  const period = {
+    ...(input.period || {}),
+    month: input.period?.month || derivedDates?.month || input.month || null,
+    previous_month:
+      input.period?.previous_month ||
+      derivedDates?.previous_month ||
+      input.previous_month ||
+      input.previousMonth ||
+      null
+  };
+
+  const finalGa4 = {
+    ...ga4Input,
+    propertyId:
+      ga4Input.propertyId ||
+      input.ga4PropertyId ||
+      input.propertyId ||
+      knownClient?.ga4PropertyId ||
+      undefined,
+    startDate: ga4Input.startDate || startDate,
+    endDate: ga4Input.endDate || endDate,
+    previousStartDate: ga4Input.previousStartDate || previousStartDate,
+    previousEndDate: ga4Input.previousEndDate || previousEndDate
+  };
+
+  const finalSearchConsole = {
+    ...searchConsoleInput,
+    siteUrl:
+      searchConsoleInput.siteUrl ||
+      input.searchConsoleSiteUrl ||
+      input.siteUrl ||
+      knownClient?.searchConsoleSiteUrl ||
+      undefined,
+    startDate: searchConsoleInput.startDate || startDate,
+    endDate: searchConsoleInput.endDate || endDate,
+    previousStartDate: searchConsoleInput.previousStartDate || previousStartDate,
+    previousEndDate: searchConsoleInput.previousEndDate || previousEndDate
+  };
+
+  return {
+    ...input,
+    client: finalClient,
+    period,
+    ga4: finalGa4,
+    search_console: finalSearchConsole,
+    tasks_done: input.tasks_done || input.tasksDone || [],
+    next_month_actions: input.next_month_actions || input.nextMonthActions || [],
+    client_needs: input.client_needs || input.clientNeeds || []
+  };
 }
 
 function isValidDate(value) {
@@ -870,7 +1226,8 @@ async function enrichInputWithGa4(input) {
 }
 
 async function enrichInputWithGoogleData(input) {
-  const withGa4 = await enrichInputWithGa4(input);
+  const preparedInput = prepareReportInput(input);
+  const withGa4 = await enrichInputWithGa4(preparedInput);
   const withSearchConsole = await enrichInputWithSearchConsole(withGa4);
   return withSearchConsole;
 }
@@ -932,7 +1289,17 @@ function buildMonthlyReport(data) {
     );
   }
 
-    if (!data.google_business_profile) {
+  if (!data.search_console) {
+    missingDataBlocks.push("No se han aportado datos de Search Console.");
+  }
+
+  if (data.search_console?.real_data_loaded === false) {
+    missingDataBlocks.push(
+      `No se han podido cargar los datos reales de Search Console: ${data.search_console.error || "error no especificado"}.`
+    );
+  }
+
+  if (!data.google_business_profile) {
     missingDataBlocks.push(
       "Google Business Profile / Google Maps está pendiente de conexión API. Mientras Google aprueba el acceso, este informe se genera con GA4, Search Console, tareas realizadas y datos comerciales aportados manualmente."
     );
@@ -948,12 +1315,6 @@ function buildMonthlyReport(data) {
 
   if (!data.crm) {
     missingDataBlocks.push("No se han aportado datos de CRM.");
-  }
-
-  if (searchConsole.siteUrl && searchConsole.real_data_loaded === false) {
-    missingDataBlocks.push(
-      `No se han podido cargar los datos reales de Search Console: ${searchConsole.error || "error no especificado"}.`
-    );
   }
 
   const topQueries = Array.isArray(searchConsole.top_queries)
@@ -1513,6 +1874,381 @@ El equipo de Cleanify`;
   };
 }
 
+function escapeFilePart(value) {
+  return String(value || "report")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "report";
+}
+
+async function fetchBuffer(url) {
+  if (!url) return null;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (error) {
+    console.warn("No se pudo cargar recurso remoto:", url, error.message);
+    return null;
+  }
+}
+
+let cachedLogoBuffer = null;
+async function getCleanifyLogoBuffer() {
+  if (!CLEANIFY_LOGO_URL) return null;
+  if (cachedLogoBuffer) return cachedLogoBuffer;
+  cachedLogoBuffer = await fetchBuffer(CLEANIFY_LOGO_URL);
+  return cachedLogoBuffer;
+}
+
+function valueOrDash(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
+}
+
+function formatPdfNumber(value) {
+  const number = safeNumber(value);
+  if (number === null) return "—";
+  if (Math.abs(number) >= 1000) return new Intl.NumberFormat("es-ES").format(number);
+  return String(Number(number.toFixed ? number.toFixed(2) : number)).replace(".", ",");
+}
+
+function formatPdfPercent(value) {
+  const number = safeNumber(value);
+  if (number === null) return "—";
+  return `${(number * 100).toFixed(1).replace(".", ",")}%`;
+}
+
+function metricLine(metric, label, suffix = "") {
+  if (!metric || metric.current === null || metric.current === undefined) {
+    return `${label}: sin dato disponible`;
+  }
+  const current = `${formatPdfNumber(metric.current)}${suffix}`;
+  const previous = metric.previous === null || metric.previous === undefined
+    ? "sin comparativa"
+    : `${formatPdfNumber(metric.previous)}${suffix}`;
+  if (metric.percent_change === null || metric.percent_change === undefined) {
+    return `${label}: ${current} frente a ${previous}`;
+  }
+  const sign = metric.percent_change > 0 ? "+" : "";
+  return `${label}: ${current} frente a ${previous} (${sign}${String(metric.percent_change).replace(".", ",")}%)`;
+}
+
+function sanitizePdfText(value) {
+  return String(value ?? "")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stringifyPdfItem(item) {
+  if (typeof item === "string") return sanitizePdfText(item);
+  if (!item || typeof item !== "object") return sanitizePdfText(item);
+  if (item.query) {
+    const details = [];
+    if (item.clicks !== undefined) details.push(`${item.clicks} clics`);
+    if (item.impressions !== undefined) details.push(`${item.impressions} impresiones`);
+    if (item.position !== undefined && item.position !== null) details.push(`posición ${formatPdfNumber(item.position)}`);
+    return `${item.query}${details.length ? ` (${details.join(", ")})` : ""}`;
+  }
+  if (item.eventName) return `${item.eventName}: ${formatPdfNumber(item.eventCount)}`;
+  if (item.pagePathPlusQueryString) return `${item.pagePathPlusQueryString}: ${formatPdfNumber(item.screenPageViews)} vistas`;
+  if (item.sessionDefaultChannelGroup) return `${item.sessionDefaultChannelGroup}: ${formatPdfNumber(item.sessions)} sesiones`;
+  return sanitizePdfText(JSON.stringify(item));
+}
+
+function createPdfKitDocument({ title = "Informe Cleanify" } = {}) {
+  return new PDFDocument({
+    size: "A4",
+    margins: { top: 54, right: 46, bottom: 54, left: 46 },
+    info: {
+      Title: title,
+      Author: "Cleanify",
+      Subject: "Informe mensual Cleanify",
+      Creator: "Cleanify Reporting Agent"
+    }
+  });
+}
+
+async function drawCleanifyHeader(doc, { report, mode }) {
+  const client = report.client || {};
+  const period = report.period || {};
+  const logo = await getCleanifyLogoBuffer();
+
+  doc.save();
+  doc.rect(0, 0, doc.page.width, 92).fill(mode === "internal" ? "#0f172a" : "#0b1220");
+
+  if (logo) {
+    try {
+      doc.image(logo, 46, 26, { fit: [120, 34] });
+    } catch (error) {
+      doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(18).text("Cleanify", 46, 28);
+    }
+  } else {
+    doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(20).text("Cleanify", 46, 26);
+    doc.font("Helvetica").fontSize(8).fillColor("#cbd5e1").text("Marketing digital para empresas de limpieza", 46, 49);
+  }
+
+  doc.font("Helvetica").fontSize(9).fillColor("#cbd5e1")
+    .text(mode === "internal" ? "INFORME INTERNO" : "INFORME MENSUAL", 390, 28, { width: 155, align: "right" });
+  doc.font("Helvetica-Bold").fontSize(12).fillColor("#ffffff")
+    .text(client.name || "Cliente", 300, 45, { width: 245, align: "right" });
+  doc.font("Helvetica").fontSize(9).fillColor("#cbd5e1")
+    .text(period.month || "Periodo mensual", 300, 62, { width: 245, align: "right" });
+
+  doc.restore();
+  doc.y = 122;
+}
+
+function drawPdfFooter(doc) {
+  const y = doc.page.height - 34;
+  doc.save();
+  doc.moveTo(46, y - 8).lineTo(doc.page.width - 46, y - 8).strokeColor("#e5e7eb").stroke();
+  doc.fillColor("#64748b").font("Helvetica").fontSize(8)
+    .text("Cleanify · Reporting SEO local", 46, y, { width: 250 });
+  doc.text(`Página ${doc.page.number}`, 450, y, { width: 95, align: "right" });
+  doc.restore();
+}
+
+async function addPdfPage(doc, context) {
+  drawPdfFooter(doc);
+  doc.addPage();
+  await drawCleanifyHeader(doc, context);
+}
+
+async function ensurePdfSpace(doc, context, needed = 72) {
+  const bottom = doc.page.height - doc.page.margins.bottom - 18;
+  if (doc.y + needed > bottom) {
+    await addPdfPage(doc, context);
+  }
+}
+
+async function pdfSection(doc, context, title) {
+  await ensurePdfSpace(doc, context, 62);
+  doc.moveDown(0.6);
+  doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(15).text(title, { width: 500 });
+  doc.moveTo(46, doc.y + 5).lineTo(doc.page.width - 46, doc.y + 5).strokeColor("#e5e7eb").stroke();
+  doc.moveDown(0.9);
+}
+
+async function pdfParagraph(doc, context, text, options = {}) {
+  const clean = sanitizePdfText(text);
+  if (!clean) return;
+  await ensurePdfSpace(doc, context, 60);
+  doc.fillColor(options.color || "#334155").font(options.bold ? "Helvetica-Bold" : "Helvetica").fontSize(options.size || 10.5)
+    .text(clean, { width: 503, lineGap: 3, align: options.align || "left" });
+  doc.moveDown(options.after ?? 0.55);
+}
+
+async function pdfBulletList(doc, context, items, limit = 8) {
+  const list = Array.isArray(items) && items.length ? items.slice(0, limit) : ["Sin datos disponibles."];
+  for (const item of list) {
+    await ensurePdfSpace(doc, context, 40);
+    const text = stringifyPdfItem(item);
+    doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(10).text("•", 54, doc.y, { width: 14 });
+    doc.fillColor("#334155").font("Helvetica").fontSize(10).text(text, 72, doc.y - 12, { width: 475, lineGap: 2 });
+    doc.moveDown(0.45);
+  }
+}
+
+async function pdfMetricGrid(doc, context, cards) {
+  const startX = 46;
+  const cardW = 240;
+  const gap = 14;
+  let x = startX;
+  let y = doc.y;
+  for (let i = 0; i < cards.length; i += 1) {
+    await ensurePdfSpace(doc, context, 76);
+    if (i > 0 && i % 2 === 0) {
+      x = startX;
+      y += 78;
+    }
+    if (i % 2 === 1) x = startX + cardW + gap;
+    doc.roundedRect(x, y, cardW, 62, 10).fillAndStroke("#f8fafc", "#e2e8f0");
+    doc.fillColor("#64748b").font("Helvetica").fontSize(8.5).text(cards[i].label, x + 12, y + 11, { width: cardW - 24 });
+    doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(11).text(cards[i].value, x + 12, y + 28, { width: cardW - 24, lineGap: 1 });
+  }
+  doc.y = y + 78;
+}
+
+async function buildClientPdfBuffer(report, finalOutputs) {
+  const client = report.client || {};
+  const period = report.period || {};
+  const sections = report.client_report_sections || {};
+  const metrics = report.metrics_summary || {};
+  const ga4 = metrics.ga4 || {};
+  const sc = metrics.search_console || {};
+  const context = { report, mode: "client" };
+  const doc = createPdfKitDocument({ title: `Informe mensual · ${client.name || "Cliente"}` });
+  const chunks = [];
+  doc.on("data", (chunk) => chunks.push(chunk));
+
+  await drawCleanifyHeader(doc, context);
+  doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(26).text(`Informe mensual · ${client.name || "Cliente"}`, { width: 500 });
+  doc.moveDown(0.25);
+  doc.fillColor("#475569").font("Helvetica").fontSize(12).text(`Periodo: ${period.month || "mes analizado"}`);
+  doc.moveDown(1.2);
+
+  await pdfParagraph(doc, context, sections.resumen_del_mes || `Durante ${period.month || "este mes"}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`, { size: 12, color: "#1e293b" });
+  await pdfParagraph(doc, context, "Este informe combina datos reales disponibles de GA4 y Search Console con una lectura comercial orientada a entender qué se está construyendo, qué señales aparecen y qué conviene priorizar el próximo mes.");
+
+  await pdfSection(doc, context, "1. Datos destacados del mes");
+  await pdfMetricGrid(doc, context, [
+    { label: "Usuarios activos", value: metricLine(ga4.users, "").replace(/^: /, "") },
+    { label: "Sesiones", value: metricLine(ga4.sessions, "").replace(/^: /, "") },
+    { label: "Clics orgánicos", value: metricLine(sc.clicks, "").replace(/^: /, "") },
+    { label: "Impresiones", value: metricLine(sc.impressions, "").replace(/^: /, "") }
+  ]);
+
+  await pdfSection(doc, context, "2. Lectura del mes");
+  await pdfBulletList(doc, context, sections.senales_positivas, 8);
+
+  await pdfSection(doc, context, "3. Qué se ha trabajado");
+  await pdfBulletList(doc, context, sections.que_se_ha_hecho, 7);
+
+  await pdfSection(doc, context, "4. Visibilidad orgánica y búsquedas");
+  await pdfParagraph(doc, context, `Search Console: ${metricLine(sc.clicks, "clics orgánicos")}. ${metricLine(sc.impressions, "impresiones")}. ${sc.average_position ? metricLine(sc.average_position, "posición media") + ". En esta métrica, un número menor es mejor." : ""}`);
+  await pdfBulletList(doc, context, sc.top_queries || sections.consultas_principales, 8);
+
+  await pdfSection(doc, context, "5. Qué necesita tiempo");
+  await pdfBulletList(doc, context, sections.que_necesita_tiempo, 6);
+
+  await pdfSection(doc, context, "6. Próximos pasos");
+  await pdfBulletList(doc, context, sections.proximo_mes, 7);
+
+  await pdfSection(doc, context, "7. Qué necesitamos de vosotros");
+  await pdfBulletList(doc, context, sections.necesitamos_del_cliente, 6);
+
+  await pdfSection(doc, context, "Cierre");
+  await pdfParagraph(doc, context, "La lectura debe hacerse con prudencia y foco. El objetivo es seguir convirtiendo visibilidad en oportunidades reales, reforzando las páginas y servicios con más potencial comercial.");
+
+  drawPdfFooter(doc);
+  doc.end();
+  await new Promise((resolve) => doc.on("end", resolve));
+  return Buffer.concat(chunks);
+}
+
+async function buildInternalPdfBuffer(report, finalOutputs) {
+  const client = report.client || {};
+  const period = report.period || {};
+  const metrics = report.metrics_summary || {};
+  const internal = report.internal_summary_for_cleanify || {};
+  const data = report.data_enrichment || {};
+  const sc = metrics.search_console || {};
+  const ga4 = metrics.ga4 || {};
+  const context = { report, mode: "internal" };
+  const doc = createPdfKitDocument({ title: `Informe interno Cleanify · ${client.name || "Cliente"}` });
+  const chunks = [];
+  doc.on("data", (chunk) => chunks.push(chunk));
+
+  await drawCleanifyHeader(doc, context);
+  doc.fillColor("#0f172a").font("Helvetica-Bold").fontSize(24).text(`Informe interno Cleanify · ${client.name || "Cliente"}`, { width: 500 });
+  doc.moveDown(0.2);
+  doc.fillColor("#475569").font("Helvetica").fontSize(11).text(`Periodo: ${period.month || "mes analizado"}`);
+  doc.moveDown(0.9);
+
+  await pdfMetricGrid(doc, context, [
+    { label: "GA4", value: data.ga4_real_data_loaded ? "Cargado" : "No cargado" },
+    { label: "Search Console", value: data.search_console_real_data_loaded ? "Cargado" : "No cargado" },
+    { label: "Propiedad GA4", value: valueOrDash(data.ga4_propertyId) },
+    { label: "Search Console siteUrl", value: valueOrDash(data.search_console_siteUrl) }
+  ]);
+
+  await pdfSection(doc, context, "1. Lectura real del mes");
+  await pdfParagraph(doc, context, internal.lectura_real_del_mes || "Revisar evolución del mes con datos reales disponibles y foco comercial.");
+
+  await pdfSection(doc, context, "2. Riesgos o bloqueos");
+  await pdfBulletList(doc, context, internal.riesgos_o_bloqueos, 10);
+
+  await pdfSection(doc, context, "3. Puntos a corregir y vigilar");
+  await pdfBulletList(doc, context, [
+    ...(internal.que_vigilar || []),
+    ...((sc.opportunities || []).map((item) => `Oportunidad Search Console: ${stringifyPdfItem(item)}`)),
+    ...((ga4.lead_events || []).length ? [`Revisar calidad de eventos de contacto: ${(ga4.lead_events || []).map((e) => stringifyPdfItem(e)).join("; ")}`] : [])
+  ], 14);
+
+  await pdfSection(doc, context, "4. Qué debe decir el account manager");
+  await pdfParagraph(doc, context, internal.que_debe_decir_account_manager || "Explicar el avance con calma, qué se está construyendo y cuál será el foco del próximo mes.");
+
+  await pdfSection(doc, context, "5. Qué no conviene prometer");
+  await pdfParagraph(doc, context, internal.que_no_conviene_prometer || "No prometer posiciones, leads garantizados ni resultados inmediatos.");
+
+  await pdfSection(doc, context, "6. Próxima acción prioritaria");
+  await pdfParagraph(doc, context, internal.proxima_accion_prioritaria || "Definir la acción de mayor impacto para el próximo mes.", { bold: true, color: "#0f172a" });
+
+  await pdfSection(doc, context, "7. Datos faltantes");
+  await pdfBulletList(doc, context, data.missing_data_blocks, 10);
+
+  drawPdfFooter(doc);
+  doc.end();
+  await new Promise((resolve) => doc.on("end", resolve));
+  return Buffer.concat(chunks);
+}
+
+function ensureReportsDir() {
+  fs.mkdirSync(REPORTS_DIR, { recursive: true });
+}
+
+function writeReportFile(buffer, fileName) {
+  ensureReportsDir();
+  const fullPath = path.join(REPORTS_DIR, fileName);
+  fs.writeFileSync(fullPath, buffer);
+  return fullPath;
+}
+
+async function buildReportPackage(input = {}) {
+  const normalizedInput = prepareReportInput(input);
+  const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+  const report = buildMonthlyReport(enrichedInput);
+  const final_outputs = buildFinalReportOutputs(report);
+
+  const client = report.client || {};
+  const period = report.period || {};
+  const baseSlug = `${escapeFilePart(client.name)}-${escapeFilePart(period.month)}-${crypto.randomBytes(4).toString("hex")}`;
+
+  const clientPdfBuffer = await buildClientPdfBuffer(report, final_outputs);
+  const internalPdfBuffer = await buildInternalPdfBuffer(report, final_outputs);
+
+  const clientFileName = `${baseSlug}-cliente.pdf`;
+  const internalFileName = `${baseSlug}-interno-cleanify.pdf`;
+
+  writeReportFile(clientPdfBuffer, clientFileName);
+  writeReportFile(internalPdfBuffer, internalFileName);
+
+  const packageResult = {
+    ok: true,
+    version: APP_VERSION,
+    ga4_loaded: report.data_enrichment?.ga4_real_data_loaded ?? false,
+    search_console_loaded: report.data_enrichment?.search_console_real_data_loaded ?? false,
+    gbp_loaded: Boolean(report.metrics_summary?.google_business_profile?.real_data_loaded),
+    resolved: {
+      client: report.client,
+      ga4_propertyId: report.data_enrichment?.ga4_propertyId ?? null,
+      ga4_propertyName: report.data_enrichment?.ga4_propertyName ?? null,
+      search_console_siteUrl: report.data_enrichment?.search_console_siteUrl ?? null
+    },
+    files: {
+      client_pdf: {
+        fileName: clientFileName,
+        url: `${BASE_URL}/reports/${clientFileName}`
+      },
+      internal_pdf: {
+        fileName: internalFileName,
+        url: `${BASE_URL}/reports/${internalFileName}`
+      }
+    },
+    final_outputs,
+    report
+  };
+
+  return packageResult;
+}
+
+
 function createMcpServer() {
   const server = new McpServer({
     name: "cleanify-reporting-agent",
@@ -1524,24 +2260,32 @@ function createMcpServer() {
     {
       title: "Generar informe mensual de cliente",
       description:
-        "Genera un informe mensual para clientes o proyectos de Cleanify. Si el input incluye fechas y cliente/dominio, intenta resolver y cargar datos reales de GA4 y Search Console antes de generar el informe.",
+        "Genera un informe mensual para clientes de Cleanify usando una petición humana simple. Puede recibir solo clientName y month, por ejemplo Island Servi y abril 2026. El sistema resuelve dominio, propiedad GA4, siteUrl de Search Console, fechas del mes y comparativa del mes anterior cuando es posible.",
       inputSchema: {
+        clientName: z.string().optional().describe("Nombre del cliente, por ejemplo Island Servi"),
+        domain: z.string().optional().describe("Dominio del cliente, por ejemplo islandservi.com"),
+        month: z.string().optional().describe("Mes del informe, por ejemplo abril 2026"),
+        year: z.union([z.string(), z.number()]).optional().describe("Año del informe si month es numérico"),
+        startDate: z.string().optional().describe("Fecha inicial del periodo actual en formato YYYY-MM-DD"),
+        endDate: z.string().optional().describe("Fecha final del periodo actual en formato YYYY-MM-DD"),
+        previousStartDate: z.string().optional().describe("Fecha inicial del periodo anterior en formato YYYY-MM-DD"),
+        previousEndDate: z.string().optional().describe("Fecha final del periodo anterior en formato YYYY-MM-DD"),
         client: z.object({
-          name: z.string().describe("Nombre del cliente o proyecto"),
+          name: z.string().optional().describe("Nombre del cliente o proyecto"),
           sector: z.string().optional().describe("Sector del cliente o proyecto"),
           location: z.string().optional().describe("Ciudad, provincia o zona principal"),
           domain: z.string().optional().describe("Dominio del cliente o proyecto, por ejemplo econeta.es"),
           priority_services: z.array(z.string()).optional().describe("Servicios prioritarios")
-        }),
+        }).optional(),
         period: z.object({
           month: z.string().optional(),
           previous_month: z.string().optional()
         }).optional(),
         ga4: z.record(z.any()).optional().describe(
-          "Puede incluir propertyId, startDate, endDate, previousStartDate y previousEndDate. Si no incluye propertyId, el agente intenta resolverlo por client.domain o client.name."
+          "Puede incluir propertyId, startDate, endDate, previousStartDate y previousEndDate. Si no incluye propertyId, el sistema intenta resolverlo por cliente o dominio."
         ),
         search_console: z.record(z.any()).optional().describe(
-          "Puede incluir datos manuales o una petición de datos reales con siteUrl, startDate, endDate, previousStartDate y previousEndDate. Si falta siteUrl, intenta resolverlo por client.domain."
+          "Puede incluir siteUrl, startDate, endDate, previousStartDate y previousEndDate. Si falta siteUrl, el sistema intenta resolverlo por cliente o dominio."
         ),
         google_business_profile: z.record(z.any()).optional(),
         calls: z.record(z.any()).optional(),
@@ -1553,17 +2297,34 @@ function createMcpServer() {
       }
     },
     async (input) => {
-      const enrichedInput = await enrichInputWithGoogleData(input);
+      const normalizedInput = prepareReportInput(input);
+      const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
       const report = buildMonthlyReport(enrichedInput);
+      const final_outputs = buildFinalReportOutputs(report);
+
+      const response = {
+        ok: true,
+        version: APP_VERSION,
+        ga4_loaded: report.data_enrichment?.ga4_real_data_loaded ?? false,
+        search_console_loaded: report.data_enrichment?.search_console_real_data_loaded ?? false,
+        resolved: {
+          client: report.client,
+          ga4_propertyId: report.data_enrichment?.ga4_propertyId ?? null,
+          ga4_propertyName: report.data_enrichment?.ga4_propertyName ?? null,
+          search_console_siteUrl: report.data_enrichment?.search_console_siteUrl ?? null
+        },
+        final_outputs,
+        report
+      };
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(report, null, 2)
+            text: JSON.stringify(response, null, 2)
           }
         ],
-        structuredContent: report
+        structuredContent: response
       };
     }
   );
@@ -1675,6 +2436,102 @@ function createMcpServer() {
     }
   );
 
+
+  server.registerTool(
+    "generateMonthlyReportPackage",
+    {
+      title: "Generar paquete mensual con PDFs Cleanify",
+      description:
+        "Genera el paquete completo de reporting mensual de Cleanify. Acepta una petición humana simple con clientName y month, resuelve cliente, fechas, GA4 y Search Console, y devuelve URLs a dos PDFs: informe cliente e informe interno Cleanify.",
+      inputSchema: {
+        clientName: z.string().optional().describe("Nombre del cliente, por ejemplo Island Servi"),
+        domain: z.string().optional().describe("Dominio del cliente si se conoce"),
+        month: z.string().optional().describe("Mes del informe, por ejemplo abril 2026"),
+        year: z.union([z.string(), z.number()]).optional(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
+        previousStartDate: z.string().optional(),
+        previousEndDate: z.string().optional(),
+        client: z.object({
+          name: z.string().optional(),
+          sector: z.string().optional(),
+          location: z.string().optional(),
+          domain: z.string().optional(),
+          priority_services: z.array(z.string()).optional()
+        }).optional(),
+        period: z.object({
+          month: z.string().optional(),
+          previous_month: z.string().optional()
+        }).optional(),
+        ga4: z.record(z.any()).optional(),
+        search_console: z.record(z.any()).optional(),
+        google_business_profile: z.record(z.any()).optional(),
+        calls: z.record(z.any()).optional(),
+        forms: z.record(z.any()).optional(),
+        crm: z.record(z.any()).optional(),
+        tasks_done: z.array(z.string()).optional(),
+        next_month_actions: z.array(z.string()).optional(),
+        client_needs: z.array(z.string()).optional()
+      }
+    },
+    async (input) => {
+      const packageResult = await buildReportPackage(input);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              ok: packageResult.ok,
+              version: packageResult.version,
+              ga4_loaded: packageResult.ga4_loaded,
+              search_console_loaded: packageResult.search_console_loaded,
+              gbp_loaded: packageResult.gbp_loaded,
+              resolved: packageResult.resolved,
+              files: packageResult.files,
+              email_subjects: packageResult.final_outputs?.email_subjects || [],
+              email_body: packageResult.final_outputs?.email_body || ""
+            }, null, 2)
+          }
+        ],
+        structuredContent: packageResult
+      };
+    }
+  );
+
+  server.registerTool(
+    "listKnownClients",
+    {
+      title: "Listar clientes conocidos",
+      description:
+        "Devuelve el directorio de clientes que el sistema puede resolver automáticamente para informes mensuales.",
+      inputSchema: {}
+    },
+    async () => {
+      const data = {
+        ok: true,
+        version: APP_VERSION,
+        clients: CLIENT_DIRECTORY.map((client) => ({
+          name: client.name,
+          domain: client.domain,
+          ga4PropertyId: client.ga4PropertyId,
+          searchConsoleSiteUrl: client.searchConsoleSiteUrl,
+          aliases: client.aliases || []
+        }))
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(data, null, 2)
+          }
+        ],
+        structuredContent: data
+      };
+    }
+  );
+
   return server;
 }
 
@@ -1691,11 +2548,12 @@ app.get("/health", (req, res) => {
       google_assets: `${BASE_URL}/google/assets`,
       google_resolve_assets: `${BASE_URL}/google/resolve-assets`,
       google_test: `${BASE_URL}/google/test`,
+      clients: `${BASE_URL}/clients`,
       ga4_monthly: `${BASE_URL}/ga4/monthly`,
       search_console_monthly: `${BASE_URL}/search-console/monthly`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
-monthly_report_html: `${BASE_URL}/api/report/monthly/html`,
-mcp: `${BASE_URL}/mcp`
+      monthly_report_html: `${BASE_URL}/api/report/monthly/html`,
+      mcp: `${BASE_URL}/mcp`
     }
   });
 });
@@ -1708,6 +2566,7 @@ app.get("/debug/routes", (req, res) => {
       "GET /",
       "GET /health",
       "GET /debug/routes",
+      "GET /clients",
       "GET /oauth/google/start",
       "GET /oauth/google/callback",
       "GET /google/test",
@@ -1716,9 +2575,24 @@ app.get("/debug/routes", (req, res) => {
       "GET /ga4/monthly",
       "GET /search-console/monthly",
       "POST /api/report/monthly",
+      "POST /api/report/monthly/html",
       "POST /mcp",
       "GET /openapi.json"
     ]
+  });
+});
+
+app.get("/clients", (req, res) => {
+  res.json({
+    ok: true,
+    version: APP_VERSION,
+    clients: CLIENT_DIRECTORY.map((client) => ({
+      name: client.name,
+      domain: client.domain,
+      ga4PropertyId: client.ga4PropertyId,
+      searchConsoleSiteUrl: client.searchConsoleSiteUrl,
+      aliases: client.aliases || []
+    }))
   });
 });
 
@@ -2043,22 +2917,85 @@ app.get("/search-console/monthly", async (req, res) => {
   }
 });
 
+app.get("/reports/:fileName", (req, res) => {
+  try {
+    const fileName = path.basename(req.params.fileName || "");
+    if (!fileName.endsWith(".pdf")) {
+      return res.status(400).json({ ok: false, error: "Archivo no permitido." });
+    }
+
+    const fullPath = path.join(REPORTS_DIR, fileName);
+    if (!fs.existsSync(fullPath)) {
+      return res.status(404).json({ ok: false, error: "Informe no encontrado o expirado." });
+    }
+
+    return res.type("application/pdf").sendFile(fullPath);
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: "No se pudo servir el PDF.", details: error.message });
+  }
+});
+
+app.post("/api/report/monthly/client-pdf", async (req, res) => {
+  try {
+    const normalizedInput = prepareReportInput(req.body || {});
+    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+    const report = buildMonthlyReport(enrichedInput);
+    const final_outputs = buildFinalReportOutputs(report);
+    const buffer = await buildClientPdfBuffer(report, final_outputs);
+    const fileName = `${escapeFilePart(report.client?.name)}-${escapeFilePart(report.period?.month)}-cliente.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+    return res.send(buffer);
+  } catch (error) {
+    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando PDF cliente.", details: error.message });
+  }
+});
+
+app.post("/api/report/monthly/internal-pdf", async (req, res) => {
+  try {
+    const normalizedInput = prepareReportInput(req.body || {});
+    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+    const report = buildMonthlyReport(enrichedInput);
+    const final_outputs = buildFinalReportOutputs(report);
+    const buffer = await buildInternalPdfBuffer(report, final_outputs);
+    const fileName = `${escapeFilePart(report.client?.name)}-${escapeFilePart(report.period?.month)}-interno-cleanify.pdf`;
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+    return res.send(buffer);
+  } catch (error) {
+    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando PDF interno.", details: error.message });
+  }
+});
+
+app.post("/api/report/monthly/package", async (req, res) => {
+  try {
+    const packageResult = await buildReportPackage(req.body || {});
+    return res.json(packageResult);
+  } catch (error) {
+    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando paquete de informes.", details: error.message });
+  }
+});
+
+
 app.post("/api/report/monthly/html", async (req, res) => {
   try {
     const data = req.body || {};
+    const normalizedInput = prepareReportInput(data);
 
-    if (!data.client || !data.client.name) {
+    if (!normalizedInput.client || !normalizedInput.client.name || normalizedInput.client.name === "Cliente sin nombre") {
       return res.status(400).type("html").send(`
         <html>
           <body style="font-family: Arial, sans-serif; padding: 32px;">
             <h1>Error</h1>
-            <p>Falta <strong>client.name</strong> en el JSON enviado.</p>
+            <p>Falta el nombre del cliente. Puedes enviarlo como <strong>client.name</strong> o <strong>clientName</strong>.</p>
           </body>
         </html>
       `);
     }
 
-    const enrichedInput = await enrichInputWithGoogleData(data);
+    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
     const report = buildMonthlyReport(enrichedInput);
     const final_outputs = buildFinalReportOutputs(report);
 
@@ -2078,21 +3015,22 @@ app.post("/api/report/monthly/html", async (req, res) => {
 app.post("/api/report/monthly", async (req, res) => {
   try {
     const data = req.body || {};
+    const normalizedInput = prepareReportInput(data);
 
-    if (!data.client || !data.client.name) {
+    if (!normalizedInput.client || !normalizedInput.client.name || normalizedInput.client.name === "Cliente sin nombre") {
       return res.status(400).json({
         ok: false,
         version: APP_VERSION,
-        error: "Falta client.name en el JSON enviado."
+        error: "Falta el nombre del cliente. Puedes enviarlo como client.name o clientName."
       });
     }
 
-    const enrichedInput = await enrichInputWithGoogleData(data);
+    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
     const report = buildMonthlyReport(enrichedInput);
-const final_outputs = buildFinalReportOutputs(report);
+    const final_outputs = buildFinalReportOutputs(report);
 
-return res.json({
-      route_version: "api-report-monthly-ga4-search-console-2026-05-22",
+    return res.json({
+      route_version: "api-report-monthly-pdf-package-2026-05-26",
       version: APP_VERSION,
       enrichment_input_received: {
         has_ga4: Boolean(data.ga4),
@@ -2111,7 +3049,7 @@ return res.json({
     });
   } catch (error) {
     return res.status(500).json({
-      route_version: "api-report-monthly-ga4-search-console-2026-05-22",
+      route_version: "api-report-monthly-pdf-package-2026-05-26",
       version: APP_VERSION,
       ok: false,
       error: "Error generando el informe mensual.",
