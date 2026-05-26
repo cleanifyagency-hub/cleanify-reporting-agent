@@ -1,7 +1,7 @@
 {
   "name": "cleanify-reporting-agent",
-  "version": "1.0.0",
-  "description": "Backend Node.js para reportes SEO de Cleanify",
+  "version": "1.7.0",
+  "description": "Backend Node.js para reportes SEO de Cleanify con MCP, GA4, Search Console y PDFs de reporting",
   "type": "module",
   "main": "index.js",
   "engines": {
@@ -15,6 +15,7 @@
     "@modelcontextprotocol/sdk": "^1.17.5",
     "express": "^4.18.3",
     "googleapis": "^144.0.0",
+    "pdfkit": "^0.15.0",
     "zod": "^3.23.8"
   }
 }
