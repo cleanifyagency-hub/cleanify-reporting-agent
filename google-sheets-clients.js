@@ -45,8 +45,6 @@ function mapRowToClient(headers, row) {
     dinorankProject: cleanString(data.proyecto_dinorank),
     responsable: cleanString(data.responsable),
     notes: cleanString(data.notas_reporting),
-
-    // Guardamos también el objeto original por si luego necesitamos columnas nuevas.
     raw: data
   };
 }
