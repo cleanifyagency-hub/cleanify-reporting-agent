@@ -1,7 +1,10 @@
 import { createAuthorizedGoogleClient } from "./google-auth.js";
 
-const DEFAULT_SHEET_ID = process.env.CLIENTS_SHEET_ID || "";
-const DEFAULT_SHEET_TAB = process.env.CLIENTS_SHEET_TAB || "clientes";
+const DEFAULT_SHEET_ID =
+  process.env.CLIENTS_SHEET_ID || "1ZYuXnPDtdWdNctGzh1TmTryB4M3zpUI35V26kbj1amw";
+
+const DEFAULT_SHEET_TAB =
+  process.env.CLIENTS_SHEET_TAB || "clientes";
 
 function normalizeHeader(value) {
   return String(value || "").trim();
