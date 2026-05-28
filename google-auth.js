@@ -3,7 +3,8 @@ import { google } from "googleapis";
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/webmasters.readonly",
   "https://www.googleapis.com/auth/analytics.readonly",
-  "https://www.googleapis.com/auth/business.manage"
+  "https://www.googleapis.com/auth/business.manage",
+  "https://www.googleapis.com/auth/spreadsheets.readonly"
 ];
 
 export function createGoogleOAuthClient() {
