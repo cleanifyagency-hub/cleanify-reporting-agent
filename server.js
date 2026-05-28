@@ -4,6 +4,7 @@ import {
   createAuthorizedGoogleClient
 } from "./google-auth.js";
 import { getSearchConsoleMonthlyData } from "./google-search-console.js";
+import { getClientsFromSheet } from "./google-sheets-clients.js";
 import { listAvailableAssets, resolveClientAssets } from "./google-assets.js";
 import express from "express";
 import PDFDocument from "pdfkit";
@@ -149,7 +150,52 @@ const CLIENT_DIRECTORY = [
   }
 ];
 
-function findKnownClient(input = {}) {
+function sheetClientToKnownClient(client = {}) {
+  return {
+    aliases: [
+      ...(Array.isArray(client.aliases) ? client.aliases : []),
+      client.name,
+      client.domain,
+      client.client_id
+    ].filter(Boolean),
+    name: client.name,
+    domain: client.domain,
+    ga4PropertyId: client.ga4PropertyId || undefined,
+    searchConsoleSiteUrl: client.searchConsoleSiteUrl || undefined,
+    sector: client.sector || null,
+    location: client.location || null,
+    priorityServices: client.priorityServices || []
+  };
+}
+
+async function getKnownClientDirectory() {
+  try {
+    const sheetResult = await getClientsFromSheet();
+    const sheetClients = Array.isArray(sheetResult?.clients) ? sheetResult.clients : [];
+
+    if (sheetClients.length > 0) {
+      return {
+        source: "google_sheet",
+        clients: sheetClients.map(sheetClientToKnownClient)
+      };
+    }
+
+    return {
+      source: "fallback_server_empty_sheet",
+      clients: CLIENT_DIRECTORY
+    };
+  } catch (error) {
+    console.warn("No se pudo cargar el directorio desde Google Sheets. Se usa fallback local:", error.message);
+
+    return {
+      source: "fallback_server",
+      error: error.message,
+      clients: CLIENT_DIRECTORY
+    };
+  }
+}
+
+function findKnownClientInDirectory(input = {}, directory = CLIENT_DIRECTORY) {
   const client = input.client || {};
 
   const candidates = [
@@ -173,7 +219,7 @@ function findKnownClient(input = {}) {
     domain: normalizeDomain(candidate)
   }));
 
-  return CLIENT_DIRECTORY.find((known) => {
+  return directory.find((known) => {
     const knownAliases = (known.aliases || []).map(normalizeText);
     const knownDomains = [
       known.domain,
@@ -203,6 +249,16 @@ function findKnownClient(input = {}) {
     });
   }) || null;
 }
+
+function findKnownClient(input = {}) {
+  return findKnownClientInDirectory(input, CLIENT_DIRECTORY);
+}
+
+async function findKnownClientAsync(input = {}) {
+  const directory = await getKnownClientDirectory();
+  return findKnownClientInDirectory(input, directory.clients);
+}
+
 
 function formatDateYYYYMMDD(date) {
   const year = date.getUTCFullYear();
@@ -285,8 +341,7 @@ function deriveMonthlyDatesFromInput(input = {}) {
   };
 }
 
-function prepareReportInput(input = {}) {
-  const knownClient = findKnownClient(input);
+function prepareReportInputWithKnownClient(input = {}, knownClient = null) {
   const derivedDates = deriveMonthlyDatesFromInput(input);
 
   const client = input.client || {};
@@ -397,6 +452,17 @@ function prepareReportInput(input = {}) {
     client_needs: input.client_needs || input.clientNeeds || []
   };
 }
+
+function prepareReportInput(input = {}) {
+  const knownClient = findKnownClient(input);
+  return prepareReportInputWithKnownClient(input, knownClient);
+}
+
+async function prepareReportInputAsync(input = {}) {
+  const knownClient = await findKnownClientAsync(input);
+  return prepareReportInputWithKnownClient(input, knownClient);
+}
+
 
 function isValidDate(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -1226,7 +1292,7 @@ async function enrichInputWithGa4(input) {
 }
 
 async function enrichInputWithGoogleData(input) {
-  const preparedInput = prepareReportInput(input);
+  const preparedInput = await prepareReportInputAsync(input);
   const withGa4 = await enrichInputWithGa4(preparedInput);
   const withSearchConsole = await enrichInputWithSearchConsole(withGa4);
   return withSearchConsole;
@@ -2201,8 +2267,7 @@ function writeReportFile(buffer, fileName) {
 }
 
 async function buildReportPackage(input = {}) {
-  const normalizedInput = prepareReportInput(input);
-  const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+  const enrichedInput = await enrichInputWithGoogleData(input);
   const report = buildMonthlyReport(enrichedInput);
   const final_outputs = buildFinalReportOutputs(report);
 
@@ -2297,8 +2362,7 @@ function createMcpServer() {
       }
     },
     async (input) => {
-      const normalizedInput = prepareReportInput(input);
-      const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+      const enrichedInput = await enrichInputWithGoogleData(input);
       const report = buildMonthlyReport(enrichedInput);
       const final_outputs = buildFinalReportOutputs(report);
 
@@ -2508,10 +2572,14 @@ function createMcpServer() {
       inputSchema: {}
     },
     async () => {
+      const directory = await getKnownClientDirectory();
+
       const data = {
         ok: true,
         version: APP_VERSION,
-        clients: CLIENT_DIRECTORY.map((client) => ({
+        source: directory.source,
+        count: directory.clients.length,
+        clients: directory.clients.map((client) => ({
           name: client.name,
           domain: client.domain,
           ga4PropertyId: client.ga4PropertyId,
@@ -2519,6 +2587,10 @@ function createMcpServer() {
           aliases: client.aliases || []
         }))
       };
+
+      if (directory.error) {
+        data.warning = directory.error;
+      }
 
       return {
         content: [
@@ -2582,18 +2654,36 @@ app.get("/debug/routes", (req, res) => {
   });
 });
 
-app.get("/clients", (req, res) => {
-  res.json({
-    ok: true,
-    version: APP_VERSION,
-    clients: CLIENT_DIRECTORY.map((client) => ({
-      name: client.name,
-      domain: client.domain,
-      ga4PropertyId: client.ga4PropertyId,
-      searchConsoleSiteUrl: client.searchConsoleSiteUrl,
-      aliases: client.aliases || []
-    }))
-  });
+app.get("/clients", async (req, res) => {
+  try {
+    const sheetResult = await getClientsFromSheet();
+
+    return res.json({
+      ok: true,
+      version: APP_VERSION,
+      source: "google_sheet",
+      count: sheetResult.clients.length,
+      clients: sheetResult.clients
+    });
+  } catch (error) {
+    console.error("No se pudieron cargar clientes desde Google Sheets:", error);
+
+    return res.json({
+      ok: true,
+      version: APP_VERSION,
+      source: "fallback_server",
+      warning: "No se pudieron cargar clientes desde Google Sheets. Se usa CLIENT_DIRECTORY como respaldo.",
+      details: error.message,
+      count: CLIENT_DIRECTORY.length,
+      clients: CLIENT_DIRECTORY.map((client) => ({
+        name: client.name,
+        domain: client.domain,
+        ga4PropertyId: client.ga4PropertyId,
+        searchConsoleSiteUrl: client.searchConsoleSiteUrl,
+        aliases: client.aliases || []
+      }))
+    });
+  }
 });
 
 app.get("/oauth/google/start", (req, res) => {
@@ -2937,8 +3027,7 @@ app.get("/reports/:fileName", (req, res) => {
 
 app.post("/api/report/monthly/client-pdf", async (req, res) => {
   try {
-    const normalizedInput = prepareReportInput(req.body || {});
-    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+    const enrichedInput = await enrichInputWithGoogleData(req.body || {});
     const report = buildMonthlyReport(enrichedInput);
     const final_outputs = buildFinalReportOutputs(report);
     const buffer = await buildClientPdfBuffer(report, final_outputs);
@@ -2954,8 +3043,7 @@ app.post("/api/report/monthly/client-pdf", async (req, res) => {
 
 app.post("/api/report/monthly/internal-pdf", async (req, res) => {
   try {
-    const normalizedInput = prepareReportInput(req.body || {});
-    const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+    const enrichedInput = await enrichInputWithGoogleData(req.body || {});
     const report = buildMonthlyReport(enrichedInput);
     const final_outputs = buildFinalReportOutputs(report);
     const buffer = await buildInternalPdfBuffer(report, final_outputs);
@@ -2982,7 +3070,7 @@ app.post("/api/report/monthly/package", async (req, res) => {
 app.post("/api/report/monthly/html", async (req, res) => {
   try {
     const data = req.body || {};
-    const normalizedInput = prepareReportInput(data);
+    const normalizedInput = await prepareReportInputAsync(data);
 
     if (!normalizedInput.client || !normalizedInput.client.name || normalizedInput.client.name === "Cliente sin nombre") {
       return res.status(400).type("html").send(`
@@ -3015,7 +3103,7 @@ app.post("/api/report/monthly/html", async (req, res) => {
 app.post("/api/report/monthly", async (req, res) => {
   try {
     const data = req.body || {};
-    const normalizedInput = prepareReportInput(data);
+    const normalizedInput = await prepareReportInputAsync(data);
 
     if (!normalizedInput.client || !normalizedInput.client.name || normalizedInput.client.name === "Cliente sin nombre") {
       return res.status(400).json({
