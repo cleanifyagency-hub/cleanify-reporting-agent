@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.8.0-client-diagnostics-and-report-data";
+const APP_VERSION = "1.8.1-debug-report-copy-cleanup";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -1389,6 +1389,117 @@ function buildDataStatus({ client = {}, enrichedInput = {}, assetsResolution = n
   };
 }
 
+
+function buildDiagnosticDataStatus({ client = {}, preparedInput = {}, assetsResolution = null } = {}) {
+  const preparedGa4 = preparedInput.ga4 || {};
+  const preparedSearchConsole = preparedInput.search_console || {};
+  const matchedSearchConsole = assetsResolution?.matched?.search_console || null;
+  const matchedGa4 = assetsResolution?.matched?.ga4 || null;
+
+  const ga4Configured = Boolean(preparedGa4.propertyId || preparedGa4.propertyResourceName || matchedGa4?.propertyId);
+  const searchConsoleConfigured = Boolean(preparedSearchConsole.siteUrl || matchedSearchConsole?.siteUrl);
+  const searchConsolePermission = matchedSearchConsole?.permissionLevel || null;
+
+  const ga4Status = ga4Configured
+    ? {
+        status: "resolved",
+        severity: "success",
+        label: "Propiedad resuelta",
+        detail: "La propiedad GA4 está configurada o se ha resuelto para este cliente."
+      }
+    : {
+        status: "not_configured",
+        severity: "info",
+        label: "No configurado o no resuelto",
+        detail: "No hay una propiedad GA4 configurada o resuelta para este cliente."
+      };
+
+  let searchConsoleStatus;
+  if (searchConsolePermission === "siteUnverifiedUser") {
+    searchConsoleStatus = {
+      status: "permission_required",
+      severity: "warning",
+      label: "Detectado, pero sin permisos suficientes",
+      detail: "La propiedad existe, pero la cuenta autorizada no tiene permisos suficientes."
+    };
+  } else if (searchConsoleConfigured) {
+    searchConsoleStatus = {
+      status: "resolved",
+      severity: "success",
+      label: "Propiedad resuelta",
+      detail: "La propiedad de Search Console está configurada o se ha resuelto para este cliente."
+    };
+  } else {
+    searchConsoleStatus = {
+      status: "not_configured",
+      severity: "info",
+      label: "No configurado o no resuelto",
+      detail: "No hay una propiedad de Search Console configurada o resuelta para este cliente."
+    };
+  }
+
+  const ga4Good = ga4Status.status === "resolved" || ga4Status.status === "ok";
+  const searchConsoleGood = searchConsoleStatus.status === "resolved" || searchConsoleStatus.status === "ok";
+  const hasBlockingPermissionIssue = searchConsoleStatus.status === "permission_required";
+
+  return {
+    client: {
+      name: client.name || null,
+      domain: client.domain || null
+    },
+    overall_status:
+      ga4Good && searchConsoleGood
+        ? "complete"
+        : hasBlockingPermissionIssue && !ga4Good
+          ? "blocked_or_empty"
+          : ga4Good || searchConsoleGood
+            ? "partial"
+            : "blocked_or_empty",
+    ga4: {
+      ...ga4Status,
+      propertyId: preparedGa4.propertyId || matchedGa4?.propertyId || null,
+      propertyName: preparedGa4.propertyName || matchedGa4?.propertyName || null
+    },
+    search_console: {
+      ...searchConsoleStatus,
+      siteUrl: preparedSearchConsole.siteUrl || matchedSearchConsole?.siteUrl || null,
+      permissionLevel: searchConsolePermission
+    },
+    google_business_profile: {
+      status: "deferred",
+      severity: "info",
+      label: "Pendiente para fase posterior",
+      detail: "GBP no bloquea el reporting actual. Se retomará cuando haya cuota/API disponible."
+    },
+    dinorank: {
+      status: "deferred",
+      severity: "info",
+      label: "Pendiente para fase posterior",
+      detail: "DinoRank se integrará por API o exportaciones cuando se confirme la vía disponible."
+    },
+    missing_data_blocks: []
+  };
+}
+
+function buildMissingDataMessage(source, integration = {}) {
+  const sourceLabel = source === "ga4" ? "GA4" : "Search Console";
+  const configured = source === "ga4"
+    ? Boolean(integration.propertyId || integration.propertyResourceName || integration.propertyName)
+    : Boolean(integration.siteUrl);
+  const error = String(integration.error || "").trim();
+  const normalizedError = normalizeText(error);
+
+  if (!configured) {
+    return `${sourceLabel} no está configurado para este cliente. El informe se genera con los bloques de datos disponibles.`;
+  }
+
+  if (source === "search_console" && (normalizedError.includes("permission") || normalizedError.includes("insufficient") || normalizedError.includes("not verified") || normalizedError.includes("forbidden"))) {
+    return "Search Console está detectado, pero la cuenta autorizada no tiene permisos suficientes para consultar datos.";
+  }
+
+  return `No se han podido cargar los datos reales de ${sourceLabel}: ${error || "error no especificado"}.`;
+}
+
 function getRequestAuthToken(req) {
   const authorization = String(req.headers.authorization || "");
   if (authorization.toLowerCase().startsWith("bearer ")) {
@@ -1455,11 +1566,10 @@ async function buildClientDiagnostics(input = {}) {
     ? directoryClients.find((clientItem) => normalizeDomain(clientItem.domain) === normalizeDomain(matchedSheetClient.domain) || normalizeText(clientItem.name) === normalizeText(matchedSheetClient.name)) || null
     : null;
 
-  const dataStatus = buildDataStatus({
+  const dataStatus = buildDiagnosticDataStatus({
     client,
-    enrichedInput: preparedInput,
-    assetsResolution,
-    report: null
+    preparedInput,
+    assetsResolution
   });
 
   return {
@@ -1628,9 +1738,7 @@ function buildMonthlyReport(data) {
   }
 
   if (data.ga4?.real_data_loaded === false) {
-    missingDataBlocks.push(
-      `No se han podido cargar los datos reales de GA4: ${data.ga4.error || "error no especificado"}.`
-    );
+    missingDataBlocks.push(buildMissingDataMessage("ga4", data.ga4));
   }
 
   if (!data.search_console) {
@@ -1638,9 +1746,7 @@ function buildMonthlyReport(data) {
   }
 
   if (data.search_console?.real_data_loaded === false) {
-    missingDataBlocks.push(
-      `No se han podido cargar los datos reales de Search Console: ${data.search_console.error || "error no especificado"}.`
-    );
+    missingDataBlocks.push(buildMissingDataMessage("search_console", data.search_console));
   }
 
   if (!data.google_business_profile) {
@@ -1918,6 +2024,22 @@ function buildFinalReportOutputs(report) {
     ? formatMetricCompare(searchConsole.average_position, "Posición media")
     : "Posición media: sin dato disponible.";
 
+  const ga4Narrative = ga4Loaded
+    ? "La web ya está generando datos suficientes para revisar usuarios, sesiones, páginas principales y eventos. Aunque este mes no se observa un crecimiento fuerte frente al periodo anterior, sí tenemos una base de medición útil para detectar qué páginas reciben visitas y qué acciones conviene reforzar."
+    : "Al no estar GA4 disponible o configurado para este cliente, este bloque queda pendiente de medición. La lectura del mes se apoya en los datos disponibles, especialmente Search Console cuando existe acceso.";
+
+  const searchConsoleNarrative = searchConsoleLoaded
+    ? "En Search Console vemos señales útiles sobre visibilidad, consultas, clics e impresiones. La prioridad es reforzar páginas, contenidos, intención de búsqueda y snippets para convertir más apariciones en clics cualificados."
+    : "Al no poder consultar Search Console para este cliente, este bloque queda pendiente de permisos o configuración. Conviene resolver el acceso antes de hacer una lectura completa de visibilidad orgánica.";
+
+  const emailDataSentence = ga4Loaded && searchConsoleLoaded
+    ? "Este mes contamos con datos reales de GA4 y Search Console, lo que nos ayuda a interpretar mejor la evolución de la web y la visibilidad orgánica."
+    : ga4Loaded
+      ? "Este mes contamos con datos reales de GA4. Search Console queda pendiente de configuración o permisos, así que la lectura orgánica es limitada."
+      : searchConsoleLoaded
+        ? "Este mes contamos con datos reales de Search Console. GA4 no está disponible o no está configurado, por lo que la lectura se centra en visibilidad orgánica, consultas e impresiones."
+        : "Este mes el informe se centra en el estado del proyecto y la medición, ya que todavía falta completar el acceso o la configuración de GA4 y Search Console.";
+
   const clientReportMarkdown = `# Informe mensual · ${clientName}
 
 Periodo: ${month}
@@ -1952,7 +2074,7 @@ La web ya está generando datos suficientes para revisar usuarios, sesiones, pá
 - ${scCtr}
 - ${scPosition}
 
-En Search Console vemos que todavía hay margen de mejora en visibilidad y posiciones. Esto no debe interpretarse como un problema aislado, sino como una señal de que debemos seguir reforzando páginas, contenidos, intención de búsqueda y optimización de snippets para convertir más apariciones en clics.
+${searchConsoleNarrative}
 
 ### Señales destacadas
 
@@ -2012,7 +2134,7 @@ ${internal.proxima_accion_prioritaria || "Definir la acción de mayor impacto pa
 
 Te compartimos el informe mensual de ${clientName}, con el resumen de trabajo realizado, las principales señales que estamos viendo y el foco previsto para el próximo mes.
 
-Este mes ya contamos con datos reales de GA4 y Search Console, lo que nos ayuda a interpretar mejor la evolución de la web y la visibilidad orgánica. Como verás, el objetivo no es solo revisar métricas, sino entender qué se está construyendo, qué empieza a moverse y qué acciones pueden ayudarnos a seguir mejorando la captación.
+${emailDataSentence} Como verás, el objetivo no es solo revisar métricas, sino entender qué se está construyendo, qué empieza a moverse y qué acciones pueden ayudarnos a seguir mejorando la captación.
 
 También hemos incluido algunos puntos en los que vuestra ayuda puede acelerar el avance, especialmente en prioridades comerciales, feedback de contactos y materiales reales de trabajos.
 
@@ -2178,7 +2300,7 @@ El equipo de Cleanify`;
       <div class="metric-card"><strong>Eventos de contacto detectados</strong>${ga4Conversions}</div>
       <div class="metric-card"><strong>Engagement rate</strong>${ga4EngagementRate}</div>
     </div>
-    <p>La web ya está generando datos suficientes para revisar usuarios, sesiones, páginas principales y eventos. Aunque este mes no se observa un crecimiento fuerte frente al periodo anterior, sí tenemos una base de medición útil para detectar qué páginas reciben visitas y qué acciones conviene reforzar.</p>
+    <p>${ga4Narrative}</p>
 
     <h3>Visibilidad orgánica en Google</h3>
     <div class="metrics-grid">
@@ -2187,7 +2309,7 @@ El equipo de Cleanify`;
       <div class="metric-card"><strong>CTR</strong>${scCtr}</div>
       <div class="metric-card"><strong>Posición media</strong>${scPosition}</div>
     </div>
-    <p>En Search Console vemos que todavía hay margen de mejora en visibilidad y posiciones. Esto no debe interpretarse como un problema aislado, sino como una señal de que debemos seguir reforzando páginas, contenidos, intención de búsqueda y optimización de snippets para convertir más apariciones en clics.</p>
+    <p>${searchConsoleNarrative}</p>
 
     <h3>Señales destacadas</h3>
     <ul>
