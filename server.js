@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.9.2-client-pdf-blank-pages-fix";
+const APP_VERSION = "1.9.3-client-results-layout-fix";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -2627,25 +2627,32 @@ function drawBulletList(doc, items, x, y, width, options = {}) {
 }
 
 function drawMetricRows(doc, metrics, x, y, width) {
-  const colW = width / metrics.length;
-  drawLine(doc, x, y + 18, x + width, y + 18, CLEANIFY_BRAND.line, 0.8);
-  drawLine(doc, x, y - 80, x + width, y - 80, CLEANIFY_BRAND.line, 0.8);
+  const colW = width / Math.max(metrics.length, 1);
+  const topY = y;
+  const bottomY = y + 128;
+
+  drawLine(doc, x, topY, x + width, topY, CLEANIFY_BRAND.line, 0.8);
+  drawLine(doc, x, bottomY, x + width, bottomY, CLEANIFY_BRAND.line, 0.8);
 
   metrics.forEach((metric, index) => {
     const xx = x + index * colW;
-    if (index > 0) drawLine(doc, xx - 14, y + 18, xx - 14, y - 80, "#cfd4e8", 0.7);
-    drawLabel(doc, metric.label, xx, y - 2, { size: 7.8, width: colW - 20 });
-    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).title).fontSize(31)
-      .text(titleDisplayText(metric.value), xx, y - 45, { width: colW - 22, height: 36 });
+    if (index > 0) drawLine(doc, xx - 12, topY, xx - 12, bottomY, "#cfd4e8", 0.7);
+
+    drawLabel(doc, metric.label, xx, topY + 22, { size: 7.8, width: colW - 20 });
+
+    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).title).fontSize(30)
+      .text(titleDisplayText(metric.value), xx, topY + 48, { width: colW - 22, height: 36 });
+
     doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(8.2)
-      .text(metric.previous || "Sin comparativa", xx, y - 69, { width: 78 });
+      .text(metric.previous || "Sin comparativa", xx, topY + 92, { width: 82 });
+
     if (metric.variation) {
       doc.fillColor(metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success).font(pdfFonts(doc).bodyBold).fontSize(8.2)
-        .text(metric.variation, xx + 78, y - 69, { width: colW - 88 });
+        .text(metric.variation, xx + 82, topY + 92, { width: colW - 92 });
     }
   });
 
-  return y - 105;
+  return bottomY + 34;
 }
 
 function addClientPage(doc) {
@@ -2744,11 +2751,11 @@ async function drawClientResults(doc, report) {
     { label: "Clics orgánicos", value: metricValue(sc.clicks), previous: metricPreviousText(sc.clicks), variation: metricVariationText(sc.clicks), isPositive: (sc.clicks?.percent_change ?? 0) >= 0 },
     { label: "Posición media", value: metricValue(sc.average_position), previous: metricPreviousText(sc.average_position, "Antes"), variation: sc.average_position?.current != null ? "menor es mejor" : "", isPositive: true }
   ];
-  drawMetricRows(doc, metricRows, 56, 228, doc.page.width - 112);
+  const afterMetricsY = drawMetricRows(doc, metricRows, 56, 206, doc.page.width - 112);
 
-  drawLine(doc, 56, 354, doc.page.width - 56, 354);
-  drawTitle(doc, "Que significan estas senales", 56, 398, 23);
-  drawBulletList(doc, sections.senales_positivas || [], 80, 456, 440, { limit: 5 });
+  drawLine(doc, 56, afterMetricsY + 2, doc.page.width - 56, afterMetricsY + 2);
+  drawTitle(doc, "Que significan estas senales", 56, afterMetricsY + 42, 23);
+  const afterSignalsY = drawBulletList(doc, sections.senales_positivas || [], 80, afterMetricsY + 100, 440, { limit: 4 });
 
   const ga4Text = ga4.real_data_loaded
     ? "GA4 ayuda a entender comportamiento web, páginas visitadas y eventos de contacto."
@@ -2757,8 +2764,9 @@ async function drawClientResults(doc, report) {
     ? "Search Console permite leer visibilidad orgánica, consultas, clics e impresiones."
     : "Al no poder consultar Search Console para este cliente, este bloque queda pendiente de permisos o configuración.";
 
-  drawLine(doc, 56, 640, doc.page.width - 56, 640);
-  drawParagraph(doc, `${ga4Text} ${scText}`, 56, 668, 470, { color: CLEANIFY_BRAND.muted, size: 10 });
+  const notesY = Math.min(Math.max(afterSignalsY + 32, 650), 690);
+  drawLine(doc, 56, notesY - 28, doc.page.width - 56, notesY - 28);
+  drawParagraph(doc, `${ga4Text} ${scText}`, 56, notesY, 470, { color: CLEANIFY_BRAND.muted, size: 10 });
 }
 
 async function drawClientNextSteps(doc, report) {
