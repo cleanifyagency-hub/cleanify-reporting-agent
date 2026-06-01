@@ -18,8 +18,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const BASE_URL = "https://reportes.cleanify.agency";
-const APP_VERSION = "1.7.0-pdf-report-package";
+const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
+const APP_VERSION = "1.8.0-client-diagnostics-and-report-data";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -1291,6 +1291,284 @@ async function enrichInputWithGa4(input) {
   }
 }
 
+
+function classifyIntegrationStatus({ configured = false, loaded = false, error = null, permissionLevel = null } = {}) {
+  const normalizedError = normalizeText(error || "");
+
+  if (loaded) {
+    return {
+      status: "ok",
+      severity: "success",
+      label: "Datos cargados correctamente",
+      detail: null
+    };
+  }
+
+  if (permissionLevel === "siteUnverifiedUser" || normalizedError.includes("permission") || normalizedError.includes("insufficient") || normalizedError.includes("not verified") || normalizedError.includes("forbidden")) {
+    return {
+      status: "permission_required",
+      severity: "warning",
+      label: "Detectado, pero sin permisos suficientes",
+      detail: error || "La propiedad existe, pero la cuenta autorizada no tiene permisos suficientes."
+    };
+  }
+
+  if (!configured || normalizedError.includes("no se pudo resolver") || normalizedError.includes("falta") || normalizedError.includes("missing")) {
+    return {
+      status: "not_configured",
+      severity: "info",
+      label: "No configurado o no resuelto",
+      detail: error || "No hay una propiedad configurada para este cliente."
+    };
+  }
+
+  return {
+    status: "error",
+    severity: "error",
+    label: "Error al consultar datos",
+    detail: error || "Error no especificado."
+  };
+}
+
+function buildDataStatus({ client = {}, enrichedInput = {}, assetsResolution = null, report = null } = {}) {
+  const ga4 = enrichedInput.ga4 || {};
+  const searchConsole = enrichedInput.search_console || {};
+  const matchedSearchConsole = assetsResolution?.matched?.search_console || null;
+  const matchedGa4 = assetsResolution?.matched?.ga4 || null;
+
+  const ga4Configured = Boolean(ga4.propertyId || ga4.propertyResourceName || matchedGa4?.propertyId);
+  const searchConsoleConfigured = Boolean(searchConsole.siteUrl || matchedSearchConsole?.siteUrl);
+
+  const ga4Status = classifyIntegrationStatus({
+    configured: ga4Configured,
+    loaded: ga4.real_data_loaded === true,
+    error: ga4.error || null
+  });
+
+  const searchConsoleStatus = classifyIntegrationStatus({
+    configured: searchConsoleConfigured,
+    loaded: searchConsole.real_data_loaded === true,
+    error: searchConsole.error || null,
+    permissionLevel: matchedSearchConsole?.permissionLevel || null
+  });
+
+  return {
+    client: {
+      name: client.name || null,
+      domain: client.domain || null
+    },
+    overall_status:
+      ga4Status.status === "ok" && searchConsoleStatus.status === "ok"
+        ? "complete"
+        : ga4Status.status === "ok" || searchConsoleStatus.status === "ok"
+          ? "partial"
+          : "blocked_or_empty",
+    ga4: {
+      ...ga4Status,
+      propertyId: ga4.propertyId || matchedGa4?.propertyId || null,
+      propertyName: ga4.propertyName || matchedGa4?.propertyName || null
+    },
+    search_console: {
+      ...searchConsoleStatus,
+      siteUrl: searchConsole.siteUrl || matchedSearchConsole?.siteUrl || null,
+      permissionLevel: matchedSearchConsole?.permissionLevel || null
+    },
+    google_business_profile: {
+      status: "deferred",
+      severity: "info",
+      label: "Pendiente para fase posterior",
+      detail: "GBP no bloquea el reporting actual. Se retomará cuando haya cuota/API disponible."
+    },
+    dinorank: {
+      status: "deferred",
+      severity: "info",
+      label: "Pendiente para fase posterior",
+      detail: "DinoRank se integrará por API o exportaciones cuando se confirme la vía disponible."
+    },
+    missing_data_blocks: report?.data_enrichment?.missing_data_blocks || []
+  };
+}
+
+function getRequestAuthToken(req) {
+  const authorization = String(req.headers.authorization || "");
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    return authorization.slice(7).trim();
+  }
+  return String(req.headers["x-reporting-token"] || req.query.token || req.body?.token || "").trim();
+}
+
+function requireReportingToken(req, res, next) {
+  const expectedToken = process.env.REPORTING_API_TOKEN;
+  if (!expectedToken) return next();
+
+  const receivedToken = getRequestAuthToken(req);
+  const expectedBuffer = Buffer.from(expectedToken);
+  const receivedBuffer = Buffer.from(receivedToken || "");
+
+  if (receivedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(receivedBuffer, expectedBuffer)) {
+    return next();
+  }
+
+  return res.status(401).json({
+    ok: false,
+    version: APP_VERSION,
+    error: "Token de reporting inválido o ausente."
+  });
+}
+
+function inputFromQueryOrBody(req) {
+  return {
+    ...(req.method === "GET" ? req.query : req.body || {})
+  };
+}
+
+async function buildClientDiagnostics(input = {}) {
+  const directoryResult = await getClientsFromSheet().catch((error) => ({
+    ok: false,
+    source: "google_sheet",
+    error: error.message,
+    clients: []
+  }));
+
+  const preparedInput = await prepareReportInputAsync(input);
+  const client = preparedInput.client || {};
+
+  let assetsResolution = null;
+  try {
+    assetsResolution = await resolveGoogleAssetsForClient({
+      clientName: input.clientName || input.name || client.name,
+      domain: input.domain || client.domain,
+      location: input.location || client.location,
+      propertyId: preparedInput.ga4?.propertyId,
+      siteUrl: preparedInput.search_console?.siteUrl
+    });
+  } catch (error) {
+    assetsResolution = {
+      ok: false,
+      error: error.message
+    };
+  }
+
+  const directoryClients = Array.isArray(directoryResult.clients) ? directoryResult.clients : [];
+  const matchedSheetClient = findKnownClientInDirectory(input, directoryClients.map(sheetClientToKnownClient));
+  const fullSheetClient = matchedSheetClient
+    ? directoryClients.find((clientItem) => normalizeDomain(clientItem.domain) === normalizeDomain(matchedSheetClient.domain) || normalizeText(clientItem.name) === normalizeText(matchedSheetClient.name)) || null
+    : null;
+
+  const dataStatus = buildDataStatus({
+    client,
+    enrichedInput: preparedInput,
+    assetsResolution,
+    report: null
+  });
+
+  return {
+    ok: true,
+    version: APP_VERSION,
+    source: "client_diagnostics",
+    input_received: input,
+    directory: {
+      source: directoryResult.source || "unknown",
+      ok: directoryResult.ok !== false,
+      count: directoryClients.length,
+      error: directoryResult.error || null
+    },
+    resolved_client: client,
+    sheet_client: fullSheetClient,
+    prepared_input: {
+      client: preparedInput.client,
+      period: preparedInput.period,
+      ga4: {
+        propertyId: preparedInput.ga4?.propertyId || null,
+        startDate: preparedInput.ga4?.startDate || null,
+        endDate: preparedInput.ga4?.endDate || null,
+        previousStartDate: preparedInput.ga4?.previousStartDate || null,
+        previousEndDate: preparedInput.ga4?.previousEndDate || null
+      },
+      search_console: {
+        siteUrl: preparedInput.search_console?.siteUrl || null,
+        startDate: preparedInput.search_console?.startDate || null,
+        endDate: preparedInput.search_console?.endDate || null,
+        previousStartDate: preparedInput.search_console?.previousStartDate || null,
+        previousEndDate: preparedInput.search_console?.previousEndDate || null
+      }
+    },
+    assets_resolution: assetsResolution,
+    data_status: dataStatus,
+    next_actions: [
+      dataStatus.ga4.status === "ok" ? null : "Revisar GA4 si el informe necesita datos de tráfico web.",
+      dataStatus.search_console.status === "permission_required" ? "Añadir la cuenta autorizada como usuario completo o propietario en Search Console." : null,
+      dataStatus.search_console.status === "not_configured" ? "Completar search_console_site_url en la Sheet si falta o no coincide." : null
+    ].filter(Boolean)
+  };
+}
+
+async function buildClientReportDataPayload(input = {}) {
+  const normalizedInput = await prepareReportInputAsync(input);
+  const enrichedInput = await enrichInputWithGoogleData(normalizedInput);
+  const report = buildMonthlyReport(enrichedInput);
+  const final_outputs = buildFinalReportOutputs(report);
+
+  let assetsResolution = null;
+  try {
+    assetsResolution = await resolveGoogleAssetsForClient({
+      clientName: normalizedInput.client?.name,
+      domain: normalizedInput.client?.domain,
+      location: normalizedInput.client?.location,
+      propertyId: normalizedInput.ga4?.propertyId,
+      siteUrl: normalizedInput.search_console?.siteUrl
+    });
+  } catch (error) {
+    assetsResolution = {
+      ok: false,
+      error: error.message
+    };
+  }
+
+  const dataStatus = buildDataStatus({
+    client: normalizedInput.client,
+    enrichedInput,
+    assetsResolution,
+    report
+  });
+
+  return {
+    ok: true,
+    version: APP_VERSION,
+    source: "client_report_data",
+    data_status: dataStatus,
+    request: {
+      clientName: input.clientName || input.name || input.client?.name || null,
+      domain: input.domain || input.client?.domain || null,
+      month: input.month || input.period?.month || null,
+      startDate: normalizedInput.ga4?.startDate || normalizedInput.search_console?.startDate || null,
+      endDate: normalizedInput.ga4?.endDate || normalizedInput.search_console?.endDate || null,
+      previousStartDate: normalizedInput.ga4?.previousStartDate || normalizedInput.search_console?.previousStartDate || null,
+      previousEndDate: normalizedInput.ga4?.previousEndDate || normalizedInput.search_console?.previousEndDate || null
+    },
+    resolved: {
+      client: normalizedInput.client,
+      period: normalizedInput.period,
+      ga4: {
+        propertyId: enrichedInput.ga4?.propertyId || null,
+        propertyName: enrichedInput.ga4?.propertyName || null,
+        real_data_loaded: enrichedInput.ga4?.real_data_loaded ?? false,
+        error: enrichedInput.ga4?.error || null
+      },
+      search_console: {
+        siteUrl: enrichedInput.search_console?.siteUrl || null,
+        real_data_loaded: enrichedInput.search_console?.real_data_loaded ?? false,
+        error: enrichedInput.search_console?.error || null
+      }
+    },
+    metrics_summary: report.metrics_summary,
+    client_report_sections: report.client_report_sections,
+    internal_summary_for_cleanify: report.internal_summary_for_cleanify,
+    final_outputs,
+    report
+  };
+}
+
 async function enrichInputWithGoogleData(input) {
   const preparedInput = await prepareReportInputAsync(input);
   const withGa4 = await enrichInputWithGa4(preparedInput);
@@ -1614,6 +1892,15 @@ function buildFinalReportOutputs(report) {
 
   const clientName = client.name || "Cliente";
   const month = period.month || "este mes";
+  const ga4Loaded = ga4.real_data_loaded === true;
+  const searchConsoleLoaded = searchConsole.real_data_loaded === true;
+  const dataAvailabilityIntro = ga4Loaded && searchConsoleLoaded
+    ? "Este mes contamos con lectura real de GA4 y Search Console, lo que permite revisar tanto el comportamiento de la web como la visibilidad orgánica en Google."
+    : ga4Loaded
+      ? "Este mes contamos con lectura real de GA4. Search Console no está disponible o no se ha podido consultar, por lo que la lectura orgánica queda limitada."
+      : searchConsoleLoaded
+        ? "Este mes contamos con lectura real de Search Console. GA4 no está disponible o no está configurado para este cliente, por lo que el informe se centra en visibilidad orgánica, consultas y páginas detectadas por Google."
+        : "Este mes no se han podido cargar datos reales suficientes desde GA4 o Search Console. El informe debe leerse como revisión operativa y de estado de medición, no como análisis completo de rendimiento.";
 
   const ga4Users = formatMetricCompare(ga4.users, "Usuarios activos");
   const ga4Sessions = formatMetricCompare(ga4.sessions, "Sesiones");
@@ -1639,7 +1926,7 @@ Periodo: ${month}
 
 ${sections.resumen_del_mes || `Durante ${month}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`}
 
-Este mes ya contamos con lectura real de GA4 y Search Console, lo que nos permite revisar tanto el comportamiento de la web como la visibilidad orgánica en Google. La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.
+${dataAvailabilityIntro} La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.
 
 ## 2. Qué se ha hecho este mes
 
@@ -1873,7 +2160,7 @@ El equipo de Cleanify`;
 
     <section class="summary-box">
       <p>${sections.resumen_del_mes || `Durante ${month}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`}</p>
-      <p>Este mes ya contamos con lectura real de GA4 y Search Console, lo que nos permite revisar tanto el comportamiento de la web como la visibilidad orgánica en Google. La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.</p>
+      <p>${dataAvailabilityIntro} La lectura debe hacerse con prudencia: hay señales útiles, pero todavía faltan algunos bloques importantes como llamadas, formularios, CRM o Google Business Profile para conectar toda la foto de marketing con oportunidades comerciales reales.</p>
     </section>
 
     <h2>1. Qué se ha hecho este mes</h2>
@@ -2160,7 +2447,14 @@ async function buildClientPdfBuffer(report, finalOutputs) {
   doc.moveDown(1.2);
 
   await pdfParagraph(doc, context, sections.resumen_del_mes || `Durante ${period.month || "este mes"}, el proyecto ha seguido avanzando con foco en visibilidad, medición y captación.`, { size: 12, color: "#1e293b" });
-  await pdfParagraph(doc, context, "Este informe combina datos reales disponibles de GA4 y Search Console con una lectura comercial orientada a entender qué se está construyendo, qué señales aparecen y qué conviene priorizar el próximo mes.");
+  const pdfDataAvailabilityIntro = ga4.real_data_loaded === true && sc.real_data_loaded === true
+    ? "Este informe combina datos reales disponibles de GA4 y Search Console con una lectura comercial orientada a entender qué se está construyendo, qué señales aparecen y qué conviene priorizar el próximo mes."
+    : ga4.real_data_loaded === true
+      ? "Este informe incluye datos reales de GA4. Search Console no está disponible para este periodo o cliente, por lo que la lectura orgánica se marca como limitada."
+      : sc.real_data_loaded === true
+        ? "Este informe incluye datos reales de Search Console. GA4 no está disponible o no está configurado, por lo que la lectura se centra en visibilidad orgánica y oportunidades SEO."
+        : "Este informe se genera con datos limitados. Conviene revisar permisos, propiedades y medición antes de extraer conclusiones de rendimiento.";
+  await pdfParagraph(doc, context, pdfDataAvailabilityIntro);
 
   await pdfSection(doc, context, "1. Datos destacados del mes");
   await pdfMetricGrid(doc, context, [
@@ -2623,6 +2917,8 @@ app.get("/health", (req, res) => {
       clients: `${BASE_URL}/clients`,
       ga4_monthly: `${BASE_URL}/ga4/monthly`,
       search_console_monthly: `${BASE_URL}/search-console/monthly`,
+      debug_resolve_client: `${BASE_URL}/debug/resolve-client`,
+      chat_client_report_data: `${BASE_URL}/chat/client-report-data`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
       monthly_report_html: `${BASE_URL}/api/report/monthly/html`,
       mcp: `${BASE_URL}/mcp`
@@ -2644,6 +2940,9 @@ app.get("/debug/routes", (req, res) => {
       "GET /google/test",
       "GET /google/assets",
       "GET /google/resolve-assets",
+      "GET /debug/resolve-client",
+      "GET /chat/client-report-data",
+      "POST /chat/client-report-data",
       "GET /ga4/monthly",
       "GET /search-console/monthly",
       "POST /api/report/monthly",
@@ -2919,6 +3218,55 @@ app.get("/google/resolve-assets", async (req, res) => {
       version: APP_VERSION,
       source: "google_assets_resolver",
       error: "No se pudieron resolver los activos del cliente/proyecto.",
+      details: error.message
+    });
+  }
+});
+
+
+app.get("/debug/resolve-client", requireReportingToken, async (req, res) => {
+  try {
+    const diagnostics = await buildClientDiagnostics(inputFromQueryOrBody(req));
+    return res.json(diagnostics);
+  } catch (error) {
+    console.error("Error diagnosticando cliente:", error);
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "client_diagnostics",
+      error: "No se pudo diagnosticar el cliente.",
+      details: error.message
+    });
+  }
+});
+
+app.get("/chat/client-report-data", requireReportingToken, async (req, res) => {
+  try {
+    const payload = await buildClientReportDataPayload(inputFromQueryOrBody(req));
+    return res.json(payload);
+  } catch (error) {
+    console.error("Error preparando datos de informe para chat:", error);
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "client_report_data",
+      error: "No se pudieron preparar los datos del informe.",
+      details: error.message
+    });
+  }
+});
+
+app.post("/chat/client-report-data", requireReportingToken, async (req, res) => {
+  try {
+    const payload = await buildClientReportDataPayload(inputFromQueryOrBody(req));
+    return res.json(payload);
+  } catch (error) {
+    console.error("Error preparando datos de informe para chat:", error);
+    return res.status(500).json({
+      ok: false,
+      version: APP_VERSION,
+      source: "client_report_data",
+      error: "No se pudieron preparar los datos del informe.",
       details: error.message
     });
   }

@@ -1,6 +1,6 @@
 {
   "name": "cleanify-reporting-agent",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Backend Node.js para reportes SEO de Cleanify con MCP, GA4, Search Console y PDFs de reporting",
   "type": "module",
   "main": "index.js",
