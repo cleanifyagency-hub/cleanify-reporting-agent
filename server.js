@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.8.1-debug-report-copy-cleanup";
+const APP_VERSION = "1.8.2-final-copy-cleanup";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -1751,7 +1751,7 @@ function buildMonthlyReport(data) {
 
   if (!data.google_business_profile) {
     missingDataBlocks.push(
-      "Google Business Profile / Google Maps está pendiente de conexión API. Mientras Google aprueba el acceso, este informe se genera con GA4, Search Console, tareas realizadas y datos comerciales aportados manualmente."
+      "Google Business Profile / Google Maps está pendiente de conexión API. Este bloque no bloquea el informe actual; la lectura se apoya únicamente en las fuentes que estén disponibles para este cliente."
     );
   }
 
@@ -1930,7 +1930,7 @@ function buildMonthlyReport(data) {
     internal_summary_for_cleanify: {
       lectura_real_del_mes:
         ga4.real_data_loaded || searchConsole.real_data_loaded
-          ? "Se han cargado datos reales desde Google. Revisar si la visibilidad y el tráfico se están convirtiendo en oportunidades comerciales."
+          ? "Se han cargado datos reales desde las fuentes disponibles de Google. Revisar si la visibilidad y los datos disponibles se están convirtiendo en oportunidades comerciales."
           : "No se han podido cargar datos reales suficientes. Revisar permisos, activos resueltos, fechas y propiedad del cliente.",
       riesgos_o_bloqueos: [
         ...missingDataBlocks,
@@ -1942,7 +1942,7 @@ function buildMonthlyReport(data) {
         "Llamadas perdidas.",
         "Páginas con muchas impresiones y pocos clics.",
         "Consultas con posición media entre 5 y 15.",
-        "Canales de GA4 con tráfico pero baja conversión.",
+        "Canales o fuentes disponibles con actividad pero baja conversión.",
         "Servicios o zonas con mejor conversión."
       ],
       que_debe_decir_account_manager: "Explicar el avance con calma: qué se ha construido, qué señales empiezan a verse y qué se priorizará el próximo mes.",
