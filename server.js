@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.9.1-report-template-pagination-fix";
+const APP_VERSION = "1.9.2-client-pdf-blank-pages-fix";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -2810,13 +2810,10 @@ async function buildClientPdfBuffer(report, finalOutputs) {
   await drawClientCover(doc, report);
   doc.addPage();
   await drawClientExecutiveSummary(doc, report);
-  drawFooter(doc);
   doc.addPage();
   await drawClientResults(doc, report);
-  drawFooter(doc);
   doc.addPage();
   await drawClientNextSteps(doc, report);
-  drawFooter(doc);
   doc.addPage();
   await drawClientClose(doc, report);
 
