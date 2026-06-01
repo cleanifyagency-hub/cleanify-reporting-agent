@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.9.0-report-template-system";
+const APP_VERSION = "1.9.1-report-template-pagination-fix";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -2581,11 +2581,11 @@ async function drawClientHeader(doc) {
 }
 
 function drawFooter(doc, pageLabel = "Cleanify · informe mensual SEO local") {
-  const y = doc.page.height - 35;
+  const y = doc.page.height - 72;
   doc.save();
   doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(7.8)
-    .text(pageLabel, 56, y, { width: 300 });
-  doc.text(String(doc.page.number), doc.page.width - 86, y, { width: 30, align: "right" });
+    .text(pageLabel, 56, y, { width: 300, lineBreak: false });
+  doc.text(String(doc.page.number), doc.page.width - 86, y, { width: 30, align: "right", lineBreak: false });
   doc.restore();
 }
 
@@ -2888,7 +2888,7 @@ async function buildInternalPdfBuffer(report, finalOutputs) {
   }
 
   doc.fillColor(internalMuted).font(pdfFonts(doc).body).fontSize(8.2)
-    .text("Cleanify · informe interno", 56, doc.page.height - 45, { width: 260 });
+    .text("Cleanify · informe interno", 56, doc.page.height - 72, { width: 260, lineBreak: false });
 
   doc.end();
   await new Promise((resolve) => doc.on("end", resolve));
