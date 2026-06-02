@@ -19,7 +19,17 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.1-locked-cleanify-v7-routes";
+const APP_VERSION = "1.10.4-locked-cleanify-v7-fonts";
+
+function resolveExistingPath(candidates = []) {
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+  return "";
+}
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -2388,9 +2398,34 @@ const CLEANIFY_BRAND = {
 const CLEANIFY_ASSET_DIR = path.join(process.cwd(), "assets");
 const CLEANIFY_LOGO_PATH = process.env.CLEANIFY_LOGO_PATH || path.join(CLEANIFY_ASSET_DIR, "cleanify-logo.png");
 const CLEANIFY_LOGO_WHITE_PATH = process.env.CLEANIFY_LOGO_WHITE_PATH || path.join(CLEANIFY_ASSET_DIR, "cleanify-logo-white.png");
-const CLEANIFY_TITLE_FONT_PATH = process.env.CLEANIFY_TITLE_FONT_PATH || process.env.CLEANIFY_FONT_PATH || "";
-const CLEANIFY_BODY_FONT_PATH = process.env.CLEANIFY_BODY_FONT_PATH || "";
-const CLEANIFY_BODY_BOLD_FONT_PATH = process.env.CLEANIFY_BODY_BOLD_FONT_PATH || "";
+const CLEANIFY_TITLE_FONT_PATH = process.env.CLEANIFY_TITLE_FONT_PATH || process.env.CLEANIFY_FONT_PATH || resolveExistingPath([
+  path.join(process.cwd(), "assets", "Cleanifyok-Regular.ttf"),
+  path.join(process.cwd(), "assets", "CLEANIFYOK-REGULAR.TTF"),
+  path.join(process.cwd(), "assets", "cleanify-title.otf"),
+  path.join(process.cwd(), "assets", "cleanify-title.ttf"),
+  path.join(process.cwd(), "assets", "CleanifyTitle.otf"),
+  path.join(process.cwd(), "assets", "CleanifyTitle.ttf")
+]);
+const CLEANIFY_BODY_FONT_PATH = process.env.CLEANIFY_BODY_FONT_PATH || resolveExistingPath([
+  path.join(process.cwd(), "assets", "Montserrat-Regular.ttf"),
+  path.join(process.cwd(), "assets", "Montserrat-Regular.otf"),
+  path.join(process.cwd(), "assets", "Montserrat.ttf"),
+  path.join(process.cwd(), "assets", "cleanify-body.otf"),
+  path.join(process.cwd(), "assets", "cleanify-body.ttf"),
+  path.join(process.cwd(), "assets", "CleanifyBody.otf"),
+  path.join(process.cwd(), "assets", "CleanifyBody.ttf")
+]);
+const CLEANIFY_BODY_BOLD_FONT_PATH = process.env.CLEANIFY_BODY_BOLD_FONT_PATH || resolveExistingPath([
+  path.join(process.cwd(), "assets", "Montserrat-Bold.ttf"),
+  path.join(process.cwd(), "assets", "Montserrat-Bold.otf"),
+  path.join(process.cwd(), "assets", "Montserrat-SemiBold.ttf"),
+  path.join(process.cwd(), "assets", "Montserrat-SemiBold.otf"),
+  path.join(process.cwd(), "assets", "Montserrat-Regular.ttf"),
+  path.join(process.cwd(), "assets", "cleanify-body-bold.otf"),
+  path.join(process.cwd(), "assets", "cleanify-body-bold.ttf"),
+  path.join(process.cwd(), "assets", "CleanifyBodyBold.otf"),
+  path.join(process.cwd(), "assets", "CleanifyBodyBold.ttf")
+]);
 
 let cachedLogoBuffer = null;
 let cachedWhiteLogoBuffer = null;
@@ -2656,26 +2691,41 @@ function drawInternalFooter(doc) {
 }
 
 function drawClientMetricRows(doc, metrics, x, y, width) {
-  const colW = width / Math.max(metrics.length, 1);
-  const topY = y;
-  const bottomY = y + 102;
-  drawLine(doc, x, topY, x + width, topY, CLEANIFY_BRAND.line, 0.8);
-  drawLine(doc, x, bottomY, x + width, bottomY, CLEANIFY_BRAND.line, 0.8);
+  const columns = 2;
+  const gap = 18;
+  const cardW = (width - gap) / columns;
+  const cardH = 122;
+  const rows = Math.ceil(metrics.length / columns);
   metrics.forEach((metric, index) => {
-    const xx = x + index * colW;
-    if (index > 0) drawLine(doc, xx, topY, xx, bottomY, CLEANIFY_BRAND.line, 0.75);
-    drawLabel(doc, metric.label, xx + (index ? 14 : 0), topY + 17, { size: 7.5, width: colW - 18 });
-    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).title).fontSize(31)
-      .text(titleDisplayText(metric.value), xx + (index ? 14 : 0), topY + 43, { width: colW - 18, height: 38 });
-    doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(8.2)
-      .text(metric.previous || "Sin comparativa", xx + (index ? 14 : 0), topY + 84, { width: Math.min(88, colW - 24), lineBreak: false });
+    const row = Math.floor(index / columns);
+    const col = index % columns;
+    const xx = x + col * (cardW + gap);
+    const yy = y + row * (cardH + 16);
+    doc.roundedRect(xx, yy, cardW, cardH, 12)
+      .fillAndStroke("#ffffff", CLEANIFY_BRAND.line);
+    drawLabel(doc, metric.label, xx + 18, yy + 14, { size: 8.1, width: cardW - 36 });
+    doc.fillColor(CLEANIFY_BRAND.primary)
+      .font(pdfFonts(doc).title)
+      .fontSize(30)
+      .text(titleDisplayText(metric.value), xx + 18, yy + 36, {
+        width: cardW - 36,
+        height: 34,
+        ellipsis: true
+      });
+    doc.fillColor(CLEANIFY_BRAND.muted)
+      .font(pdfFonts(doc).body)
+      .fontSize(8.8)
+      .text(metric.previous || "Sin comparativa", xx + 18, yy + 78, {
+        width: cardW - 36
+      });
     if (metric.variation) {
       doc.fillColor(metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success)
-        .font(pdfFonts(doc).bodyBold).fontSize(8.2)
-        .text(metric.variation, xx + (index ? 98 : 84), topY + 84, { width: colW - 95, lineBreak: false });
+        .font(pdfFonts(doc).bodyBold)
+        .fontSize(8.8)
+        .text(metric.variation, xx + 18, yy + 95, { width: cardW - 36 });
     }
   });
-  return bottomY + 38;
+  return y + rows * cardH + (rows - 1) * 16 + 30;
 }
 
 function resolveClientMetrics(report) {
