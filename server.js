@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.6-locked-cleanify-v7-manual-n-semibold";
+const APP_VERSION = "1.10.7-locked-cleanify-v7-n-body-weight";
 
 function resolveExistingPath(candidates = []) {
   for (const candidate of candidates) {
@@ -2563,14 +2563,17 @@ function drawSemiBoldText(doc, text, x, y, options = {}) {
   doc.text(clean, x, y, textOptions);
   const endY = doc.y;
 
-  // Stronger faux semibold when only Montserrat Regular is available.
+  // Strong faux semibold for Montserrat Regular when no Montserrat SemiBold file exists.
   const offsets = [
-    [0.18, 0],
-    [0.00, 0.16],
-    [0.18, 0.16]
+    [0.22, 0],
+    [0.00, 0.20],
+    [0.22, 0.20],
+    [0.34, 0.08],
+    [0.08, 0.34]
   ];
+
   doc.save();
-  doc.opacity(0.62);
+  doc.opacity(0.86);
   offsets.forEach(([dx, dy]) => {
     doc.fillColor(color).font(font).fontSize(size);
     doc.text(clean, x + dx, y + dy, textOptions);
@@ -2580,6 +2583,7 @@ function drawSemiBoldText(doc, text, x, y, options = {}) {
   doc.y = endY;
   return endY;
 }
+
 
 
 
@@ -2777,9 +2781,16 @@ function drawV7Paragraph(doc, text, x, y, width, options = {}) {
 
 
 function drawLabel(doc, text, x, y, options = {}) {
-  doc.fillColor(options.color || CLEANIFY_BRAND.muted).font(pdfFonts(doc).bodyBold).fontSize(options.size || 8)
-    .text(String(text || "").toUpperCase(), x, y, { width: options.width || 240, characterSpacing: 0.2 });
+  return drawSemiBoldText(doc, String(text || "").toUpperCase(), x, y, {
+    width: options.width || 240,
+    font: pdfFonts(doc).body,
+    size: options.size || 8,
+    color: options.color || CLEANIFY_BRAND.muted,
+    lineGap: 1,
+    characterSpacing: 0.2
+  });
 }
+
 
 function drawLine(doc, x1, y1, x2, y2, color = CLEANIFY_BRAND.line, width = 0.8) {
   doc.save().strokeColor(color).lineWidth(width).moveTo(x1, y1).lineTo(x2, y2).stroke().restore();
@@ -2954,7 +2965,7 @@ async function drawClientResults(doc, report) {
   drawV7Paragraph(doc, "Métricas principales presentadas con separación limpia y lectura posterior. Sin cajas vacías cuando falta una fuente.", 56, 166, 500, { size: 10.5, color: CLEANIFY_BRAND.muted });
   const afterMetricsY = drawClientMetricRows(doc, resolveClientMetrics(report), 56, 216, doc.page.width - 112);
   drawLine(doc, 56, afterMetricsY + 2, doc.page.width - 56, afterMetricsY + 2);
-  drawV7Title(doc, "Que significan estas senales", 56, afterMetricsY + 42, 23.5, CLEANIFY_BRAND.text, 500);
+  drawV7Title(doc, "Que significan estas señales", 56, afterMetricsY + 42, 23.5, CLEANIFY_BRAND.text, 500);
   const signals = Array.isArray(sections.senales_positivas) && sections.senales_positivas.length
     ? sections.senales_positivas
     : [
@@ -2977,8 +2988,8 @@ async function drawClientStrategicPage(doc, report) {
   const watch = (sections.que_necesita_tiempo || []).slice(0, 2);
   const opportunities = (sections.oportunidades_search_console || []).slice(0, 2);
   const groups = [
-    ["Senales positivas", positive.length ? positive : ["La visibilidad orgánica empieza a mostrar patrones útiles.", "Hay consultas de servicio que pueden convertirse en oportunidades si se refuerzan páginas y snippets."]],
-    ["Senales a vigilar", watch.length ? watch : ["El volumen mensual aún es bajo, por lo que conviene evitar conclusiones fuertes.", "Faltan datos de llamadas, formularios o CRM para cerrar la foto comercial."]],
+    ["Señales positivas", positive.length ? positive : ["La visibilidad orgánica empieza a mostrar patrones útiles.", "Hay consultas de servicio que pueden convertirse en oportunidades si se refuerzan páginas y snippets."]],
+    ["Señales a vigilar", watch.length ? watch : ["El volumen mensual aún es bajo, por lo que conviene evitar conclusiones fuertes.", "Faltan datos de llamadas, formularios o CRM para cerrar la foto comercial."]],
     ["Oportunidades detectadas", opportunities.length ? opportunities : ["Optimizar páginas asociadas a consultas con impresiones y posición media entre 5 y 15.", "Reforzar servicios prioritarios con contenido más específico y enlazado interno."]]
   ];
   groups.forEach(([title, items]) => {
