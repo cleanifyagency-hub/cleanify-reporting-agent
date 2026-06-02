@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.9.3-client-results-layout-fix";
+const APP_VERSION = "1.10.0-locked-cleanify-v7-renderer";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -2462,20 +2462,20 @@ function setupCleanifyPdfFonts(doc) {
 }
 
 function valueOrDash(value) {
-  if (value === null || value === undefined || value === "") return "—";
+  if (value === null || value === undefined || value === "") return "-";
   return String(value);
 }
 
 function formatPdfNumber(value) {
   const number = safeNumber(value);
-  if (number === null) return "—";
+  if (number === null) return "-";
   if (Math.abs(number) >= 1000) return new Intl.NumberFormat("es-ES").format(number);
   return String(Number(number.toFixed ? number.toFixed(2) : number)).replace(".", ",");
 }
 
 function formatPdfPercent(value) {
   const number = safeNumber(value);
-  if (number === null) return "—";
+  if (number === null) return "-";
   return `${(number * 100).toFixed(1).replace(".", ",")}%`;
 }
 
@@ -2525,7 +2525,7 @@ function metricLine(metric, label = "", suffix = "") {
   return `${label ? label + ": " : ""}${current} frente a ${previous} (${sign}${String(metric.percent_change).replace(".", ",")}%)`;
 }
 
-function metricValue(metric, empty = "—") {
+function metricValue(metric, empty = "-") {
   if (!metric || metric.current === null || metric.current === undefined) return empty;
   return formatPdfNumber(metric.current);
 }
@@ -2544,12 +2544,12 @@ function metricVariationText(metric) {
 function createPdfKitDocument({ title = "Informe Cleanify" } = {}) {
   const doc = new PDFDocument({
     size: "A4",
-    margins: { top: 56, right: 56, bottom: 56, left: 56 },
+    margin: 0,
     info: {
       Title: title,
       Author: "Cleanify",
       Subject: "Informe mensual Cleanify",
-      Creator: "Cleanify Reporting Agent"
+      Creator: "Cleanify Reporting Agent - locked Cleanify v7 renderer"
     }
   });
   setupCleanifyPdfFonts(doc);
@@ -2571,34 +2571,25 @@ function drawLogoBuffer(doc, buffer, x, y, options = {}) {
   }
 }
 
-async function drawClientHeader(doc) {
-  const logo = await getCleanifyLogoBuffer({ white: false });
-  if (!drawLogoBuffer(doc, logo, 56, 42, { fit: [96, 28] })) {
-    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).bodyBold).fontSize(16).text("CLEANIFY", 56, 45);
-  }
-  doc.font(pdfFonts(doc).body).fontSize(8.5).fillColor(CLEANIFY_BRAND.muted)
-    .text("Informe mensual SEO local", 360, 50, { width: 180, align: "right" });
+function drawFallbackLogo(doc, x, y, color = CLEANIFY_BRAND.white, size = 20) {
+  doc.fillColor(color).font(pdfFonts(doc).bodyBold).fontSize(size).text("CLEANIFY", x, y, { lineBreak: false });
 }
 
-function drawFooter(doc, pageLabel = "Cleanify · informe mensual SEO local") {
-  const y = doc.page.height - 72;
-  doc.save();
-  doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(7.8)
-    .text(pageLabel, 56, y, { width: 300, lineBreak: false });
-  doc.text(String(doc.page.number), doc.page.width - 86, y, { width: 30, align: "right", lineBreak: false });
-  doc.restore();
+function fillPage(doc, color = CLEANIFY_BRAND.white) {
+  doc.rect(0, 0, doc.page.width, doc.page.height).fill(color);
 }
 
-function drawTitle(doc, text, x, y, size = 28, color = CLEANIFY_BRAND.text, width = 480) {
+function drawV7Title(doc, text, x, y, size = 32, color = CLEANIFY_BRAND.text, width = 470) {
   doc.fillColor(color).font(pdfFonts(doc).title).fontSize(size)
     .text(titleDisplayText(text), x, y, { width, lineGap: 1 });
+  return doc.y;
 }
 
-function drawParagraph(doc, text, x, y, width, options = {}) {
+function drawV7Paragraph(doc, text, x, y, width, options = {}) {
   const clean = sanitizePdfText(text);
   if (!clean) return y;
   const font = options.bold ? pdfFonts(doc).bodyBold : pdfFonts(doc).body;
-  doc.fillColor(options.color || CLEANIFY_BRAND.text).font(font).fontSize(options.size || 10)
+  doc.fillColor(options.color || CLEANIFY_BRAND.text).font(font).fontSize(options.size || 10.5)
     .text(clean, x, y, { width, lineGap: options.lineGap ?? 4, align: options.align || "left" });
   return doc.y;
 }
@@ -2612,201 +2603,234 @@ function drawLine(doc, x1, y1, x2, y2, color = CLEANIFY_BRAND.line, width = 0.8)
   doc.save().strokeColor(color).lineWidth(width).moveTo(x1, y1).lineTo(x2, y2).stroke().restore();
 }
 
-function drawBulletList(doc, items, x, y, width, options = {}) {
+function drawV7BulletList(doc, items, x, y, width, options = {}) {
   const list = Array.isArray(items) && items.length ? items : ["Sin datos disponibles."];
   let cy = y;
   const limit = options.limit || 8;
+  const size = options.size || 10.2;
+  const bulletColor = options.bulletColor || CLEANIFY_BRAND.accent;
+  const color = options.color || CLEANIFY_BRAND.text;
   list.slice(0, limit).forEach((item) => {
     const text = stringifyPdfItem(item);
-    doc.fillColor(options.bulletColor || CLEANIFY_BRAND.accent).circle(x + 3, cy + 5, 2).fill();
-    doc.fillColor(options.color || CLEANIFY_BRAND.text).font(pdfFonts(doc).body).fontSize(options.size || 10)
-      .text(text, x + 18, cy, { width: width - 18, lineGap: 3 });
-    cy = doc.y + 8;
+    doc.fillColor(bulletColor).circle(x + 3, cy + 6, 2.2).fill();
+    doc.fillColor(color).font(pdfFonts(doc).body).fontSize(size)
+      .text(text, x + 18, cy, { width: width - 18, lineGap: options.lineGap ?? 4 });
+    cy = doc.y + (options.gap ?? 10);
   });
   return cy;
 }
 
-function drawMetricRows(doc, metrics, x, y, width) {
-  const colW = width / Math.max(metrics.length, 1);
-  const topY = y;
-  const bottomY = y + 128;
-
-  drawLine(doc, x, topY, x + width, topY, CLEANIFY_BRAND.line, 0.8);
-  drawLine(doc, x, bottomY, x + width, bottomY, CLEANIFY_BRAND.line, 0.8);
-
-  metrics.forEach((metric, index) => {
-    const xx = x + index * colW;
-    if (index > 0) drawLine(doc, xx - 12, topY, xx - 12, bottomY, "#cfd4e8", 0.7);
-
-    drawLabel(doc, metric.label, xx, topY + 22, { size: 7.8, width: colW - 20 });
-
-    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).title).fontSize(30)
-      .text(titleDisplayText(metric.value), xx, topY + 48, { width: colW - 22, height: 36 });
-
-    doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(8.2)
-      .text(metric.previous || "Sin comparativa", xx, topY + 92, { width: 82 });
-
-    if (metric.variation) {
-      doc.fillColor(metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success).font(pdfFonts(doc).bodyBold).fontSize(8.2)
-        .text(metric.variation, xx + 82, topY + 92, { width: colW - 92 });
-    }
-  });
-
-  return bottomY + 34;
+function splitIntoShortItems(text, fallback = []) {
+  const clean = sanitizePdfText(text);
+  if (!clean) return fallback;
+  const pieces = clean.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
+  if (pieces.length >= 2) return pieces;
+  return [clean];
 }
 
-function addClientPage(doc) {
-  drawFooter(doc);
-  doc.addPage();
+function shortenText(text, max = 280) {
+  const clean = sanitizePdfText(text);
+  if (clean.length <= max) return clean;
+  return clean.slice(0, max - 1).trim().replace(/[,.!?:;]+$/, "") + "…";
+}
+
+async function drawClientHeader(doc) {
+  const logo = await getCleanifyLogoBuffer({ white: false });
+  if (!drawLogoBuffer(doc, logo, 56, 48, { fit: [98, 24] })) {
+    drawFallbackLogo(doc, 56, 49, CLEANIFY_BRAND.primary, 16);
+  }
+  doc.font(pdfFonts(doc).body).fontSize(8.8).fillColor(CLEANIFY_BRAND.muted)
+    .text("Informe mensual SEO local", 348, 52, { width: 190, align: "right" });
+}
+
+function drawClientFooter(doc, pageNumber, label = "Cleanify - propuesta visual de informe mensual") {
+  const y = doc.page.height - 50;
+  doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(7.8)
+    .text(label, 56, y, { width: 310, lineBreak: false });
+  doc.text(String(pageNumber), doc.page.width - 82, y, { width: 26, align: "right", lineBreak: false });
+}
+
+function drawInternalFooter(doc) {
+  doc.fillColor("#d8ddff").font(pdfFonts(doc).body).fontSize(8.5)
+    .text("Cleanify · informe interno", 56, doc.page.height - 62, { width: 240, lineBreak: false });
+}
+
+function drawClientMetricRows(doc, metrics, x, y, width) {
+  const colW = width / Math.max(metrics.length, 1);
+  const topY = y;
+  const bottomY = y + 102;
+  drawLine(doc, x, topY, x + width, topY, CLEANIFY_BRAND.line, 0.8);
+  drawLine(doc, x, bottomY, x + width, bottomY, CLEANIFY_BRAND.line, 0.8);
+  metrics.forEach((metric, index) => {
+    const xx = x + index * colW;
+    if (index > 0) drawLine(doc, xx, topY, xx, bottomY, CLEANIFY_BRAND.line, 0.75);
+    drawLabel(doc, metric.label, xx + (index ? 14 : 0), topY + 17, { size: 7.5, width: colW - 18 });
+    doc.fillColor(CLEANIFY_BRAND.primary).font(pdfFonts(doc).title).fontSize(31)
+      .text(titleDisplayText(metric.value), xx + (index ? 14 : 0), topY + 43, { width: colW - 18, height: 38 });
+    doc.fillColor(CLEANIFY_BRAND.muted).font(pdfFonts(doc).body).fontSize(8.2)
+      .text(metric.previous || "Sin comparativa", xx + (index ? 14 : 0), topY + 84, { width: Math.min(88, colW - 24), lineBreak: false });
+    if (metric.variation) {
+      doc.fillColor(metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success)
+        .font(pdfFonts(doc).bodyBold).fontSize(8.2)
+        .text(metric.variation, xx + (index ? 98 : 84), topY + 84, { width: colW - 95, lineBreak: false });
+    }
+  });
+  return bottomY + 38;
+}
+
+function resolveClientMetrics(report) {
+  const metrics = report.metrics_summary || {};
+  const ga4 = metrics.ga4 || {};
+  const sc = metrics.search_console || {};
+  return [
+    { label: "Sesiones", value: metricValue(ga4.sessions), previous: metricPreviousText(ga4.sessions), variation: metricVariationText(ga4.sessions), isPositive: (ga4.sessions?.percent_change ?? 0) >= 0 },
+    { label: "Usuarios", value: metricValue(ga4.users), previous: metricPreviousText(ga4.users), variation: metricVariationText(ga4.users), isPositive: (ga4.users?.percent_change ?? 0) >= 0 },
+    { label: "Clics orgánicos", value: metricValue(sc.clicks), previous: metricPreviousText(sc.clicks), variation: metricVariationText(sc.clicks), isPositive: (sc.clicks?.percent_change ?? 0) >= 0 },
+    { label: "Posición media", value: metricValue(sc.average_position), previous: metricPreviousText(sc.average_position, "Antes"), variation: sc.average_position?.current != null ? "mejora" : "", isPositive: true }
+  ];
 }
 
 async function drawClientCover(doc, report) {
   const client = report.client || {};
   const period = report.period || {};
   const logo = await getCleanifyLogoBuffer({ white: true });
-  doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.primary);
+  fillPage(doc, CLEANIFY_BRAND.primary);
   doc.rect(0, 0, 12, doc.page.height).fill(CLEANIFY_BRAND.accent);
-
-  if (!drawLogoBuffer(doc, logo, 70, 76, { fit: [230, 60] })) {
-    doc.fillColor(CLEANIFY_BRAND.white).font(pdfFonts(doc).bodyBold).fontSize(24).text("CLEANIFY", 70, 82);
-  }
-
-  drawTitle(doc, "Informe mensual", 70, 246, 36, CLEANIFY_BRAND.white, 430);
-  doc.fillColor("#d9defe").font(pdfFonts(doc).body).fontSize(14).text("Evolución SEO local y captación", 72, 282, { width: 430 });
-
-  const baseY = doc.page.height - 148;
-  drawLabel(doc, "Cliente", 72, baseY, { color: "#9aa9ff", size: 9 });
+  doc.rect(doc.page.width - 12, 0, 12, doc.page.height).fill(CLEANIFY_BRAND.accent);
+  if (!drawLogoBuffer(doc, logo, 70, 78, { fit: [240, 52] })) drawFallbackLogo(doc, 70, 82, CLEANIFY_BRAND.white, 28);
+  drawV7Title(doc, "Informe mensual", 70, 225, 39, CLEANIFY_BRAND.white, 460);
+  doc.fillColor("#ffffff").font(pdfFonts(doc).body).fontSize(14.5)
+    .text("Evolución SEO local y captación", 72, 268, { width: 430 });
+  const baseY = doc.page.height - 150;
+  drawLabel(doc, "Cliente", 72, baseY, { color: "#c8d0ff", size: 8.6 });
   doc.fillColor(CLEANIFY_BRAND.white).font(pdfFonts(doc).bodyBold).fontSize(20)
-    .text(client.name || "Cliente", 72, baseY + 24, { width: 360 });
-  doc.fillColor("#d9defe").font(pdfFonts(doc).body).fontSize(11)
-    .text(`Periodo analizado: ${period.month || "mes analizado"}${period.previous_month ? ` frente a ${period.previous_month}` : ""}`, 72, baseY + 52, { width: 390 });
-  doc.fillColor("#9aa9ff").font(pdfFonts(doc).body).fontSize(9)
-    .text("Cleanify Reporting", doc.page.width - 230, baseY + 52, { width: 160, align: "right" });
+    .text(client.name || "Cliente", 72, baseY + 23, { width: 365 });
+  doc.fillColor("#d8ddff").font(pdfFonts(doc).body).fontSize(11)
+    .text(`Periodo analizado: ${period.month || "mes analizado"}${period.previous_month ? ` frente a ${period.previous_month}` : ""}`, 72, baseY + 51, { width: 390 });
+  doc.fillColor("#c8d0ff").font(pdfFonts(doc).body).fontSize(9)
+    .text("Cleanify Reporting", doc.page.width - 230, baseY + 51, { width: 160, align: "right" });
 }
 
 async function drawClientExecutiveSummary(doc, report) {
   const client = report.client || {};
-  const period = report.period || {};
   const sections = report.client_report_sections || {};
   const metrics = report.metrics_summary || {};
   const ga4Loaded = metrics.ga4?.real_data_loaded === true;
   const scLoaded = metrics.search_console?.real_data_loaded === true;
   const dataStatus = report.data_status || {};
-
-  doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.white);
+  fillPage(doc, CLEANIFY_BRAND.white);
   await drawClientHeader(doc);
-  drawTitle(doc, "Resumen ejecutivo", 56, 122, 28);
-  const intro = "Una lectura breve para entender qué ha pasado este mes, qué significa para captación y dónde conviene concentrar el esfuerzo.";
-  drawParagraph(doc, intro, 56, 156, 470, { size: 10, color: CLEANIFY_BRAND.muted });
-
+  drawV7Title(doc, "Resumen ejecutivo", 56, 118, 32, CLEANIFY_BRAND.text, 500);
+  drawV7Paragraph(doc, "Una lectura breve para entender qué ha pasado este mes, qué significa para captación y dónde conviene concentrar el esfuerzo.", 56, 172, 500, { size: 10.5, color: CLEANIFY_BRAND.muted });
   const statusText = dataStatus.overall_status === "blocked_or_empty"
-    ? "Este mes el informe se centra en el estado del proyecto y la medición. Antes de hacer una lectura completa de rendimiento, conviene resolver accesos o fuentes pendientes."
+    ? "La lectura se centra en ordenar el estado del proyecto y resolver fuentes pendientes antes de valorar rendimiento con seguridad."
     : dataStatus.overall_status === "partial"
-      ? "La lectura se apoya en las fuentes disponibles. Hay señales útiles, aunque algunas métricas quedan pendientes hasta completar la configuración o permisos."
-      : "Contamos con datos suficientes para revisar evolución, comportamiento orgánico y próximos focos de mejora.";
-
+      ? "Las fuentes disponibles permiten interpretar avance, bloqueos y oportunidades sin forzar conclusiones."
+      : "Las fuentes disponibles permiten interpretar avance, bloqueos y oportunidades sin forzar conclusiones.";
   const blocks = [
-    {
-      title: "Qué vemos este mes",
-      text: sections.resumen_del_mes || statusText
-    },
-    {
-      title: "Qué significa",
-      text: ga4Loaded && scLoaded
-        ? "El proyecto ya permite cruzar actividad web y visibilidad orgánica para priorizar con más criterio las páginas, servicios y oportunidades de mejora."
-        : statusText
-    },
-    {
-      title: "Qué vamos a priorizar",
-      text: (sections.proximo_mes || [])[0] || "Revisar los datos del mes, reforzar páginas con potencial y mejorar la medición para conectar visibilidad con oportunidades comerciales reales."
-    }
+    { title: "Qué vemos este mes", text: sections.resumen_del_mes || statusText },
+    { title: "Qué significa", text: ga4Loaded && scLoaded ? "El proyecto sigue construyendo base: medición, páginas con potencial, consultas detectadas y mejoras que pueden convertirse en contactos cuando haya más histórico." : statusText },
+    { title: "Qué vamos a priorizar", text: (sections.proximo_mes || [])[0] || "Reforzar las páginas con oportunidad, mejorar títulos y snippets, revisar conversión y completar las fuentes de medición que falten." }
   ];
-
-  let y = 230;
+  let y = 236;
   blocks.forEach((block) => {
-    doc.rect(56, y + 2, 28, 2).fill(CLEANIFY_BRAND.accent);
-    doc.fillColor(CLEANIFY_BRAND.text).font(pdfFonts(doc).bodyBold).fontSize(12).text(block.title, 96, y - 4, { width: 400 });
-    drawParagraph(doc, block.text, 96, y + 20, 410, { size: 10, lineGap: 4 });
-    y = doc.y + 34;
+    doc.rect(56, y + 7, 28, 2.2).fill(CLEANIFY_BRAND.accent);
+    doc.fillColor(CLEANIFY_BRAND.text).font(pdfFonts(doc).bodyBold).fontSize(12.5).text(block.title, 96, y, { width: 410 });
+    y = drawV7Paragraph(doc, shortenText(block.text, 330), 96, y + 36, 410, { size: 10.2, lineGap: 4 });
+    y += 37;
   });
-
-  drawLine(doc, 56, 702, doc.page.width - 56, 702);
-  drawParagraph(doc, `El informe se adapta a las fuentes disponibles y los permisos cedidos por ${client.name || "el cliente"}.`, 56, 720, doc.page.width - 112, { color: CLEANIFY_BRAND.muted, size: 10 });
+  drawLine(doc, 56, 700, doc.page.width - 56, 700);
+  drawV7Paragraph(doc, `El informe se adapta a las fuentes disponibles y los permisos cedidos por ${client.name || "el cliente"}.`, 56, 723, 500, { color: CLEANIFY_BRAND.muted, size: 9.8 });
+  drawClientFooter(doc, 2);
 }
 
 async function drawClientResults(doc, report) {
   const sections = report.client_report_sections || {};
-  const metrics = report.metrics_summary || {};
-  const ga4 = metrics.ga4 || {};
-  const sc = metrics.search_console || {};
-
-  doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.white);
+  fillPage(doc, CLEANIFY_BRAND.white);
   await drawClientHeader(doc);
-  drawTitle(doc, "Resultados del mes", 56, 116, 28);
-  drawParagraph(doc, "Métricas principales del periodo, con lectura adaptada a las fuentes disponibles.", 56, 150, 470, { size: 10, color: CLEANIFY_BRAND.muted });
-
-  const metricRows = [
-    { label: "Sesiones", value: metricValue(ga4.sessions), previous: metricPreviousText(ga4.sessions), variation: metricVariationText(ga4.sessions), isPositive: (ga4.sessions?.percent_change ?? 0) >= 0 },
-    { label: "Usuarios", value: metricValue(ga4.users), previous: metricPreviousText(ga4.users), variation: metricVariationText(ga4.users), isPositive: (ga4.users?.percent_change ?? 0) >= 0 },
-    { label: "Clics orgánicos", value: metricValue(sc.clicks), previous: metricPreviousText(sc.clicks), variation: metricVariationText(sc.clicks), isPositive: (sc.clicks?.percent_change ?? 0) >= 0 },
-    { label: "Posición media", value: metricValue(sc.average_position), previous: metricPreviousText(sc.average_position, "Antes"), variation: sc.average_position?.current != null ? "menor es mejor" : "", isPositive: true }
-  ];
-  const afterMetricsY = drawMetricRows(doc, metricRows, 56, 206, doc.page.width - 112);
-
+  drawV7Title(doc, "Resultados del mes", 56, 112, 32, CLEANIFY_BRAND.text, 500);
+  drawV7Paragraph(doc, "Métricas principales presentadas con separación limpia y lectura posterior. Sin cajas vacías cuando falta una fuente.", 56, 166, 500, { size: 10.5, color: CLEANIFY_BRAND.muted });
+  const afterMetricsY = drawClientMetricRows(doc, resolveClientMetrics(report), 56, 216, doc.page.width - 112);
   drawLine(doc, 56, afterMetricsY + 2, doc.page.width - 56, afterMetricsY + 2);
-  drawTitle(doc, "Que significan estas senales", 56, afterMetricsY + 42, 23);
-  const afterSignalsY = drawBulletList(doc, sections.senales_positivas || [], 80, afterMetricsY + 100, 440, { limit: 4 });
-
-  const ga4Text = ga4.real_data_loaded
-    ? "GA4 ayuda a entender comportamiento web, páginas visitadas y eventos de contacto."
-    : "Al no estar GA4 disponible o configurado para este cliente, este bloque queda pendiente de medición.";
-  const scText = sc.real_data_loaded
-    ? "Search Console permite leer visibilidad orgánica, consultas, clics e impresiones."
-    : "Al no poder consultar Search Console para este cliente, este bloque queda pendiente de permisos o configuración.";
-
-  const notesY = Math.min(Math.max(afterSignalsY + 32, 650), 690);
-  drawLine(doc, 56, notesY - 28, doc.page.width - 56, notesY - 28);
-  drawParagraph(doc, `${ga4Text} ${scText}`, 56, notesY, 470, { color: CLEANIFY_BRAND.muted, size: 10 });
+  drawV7Title(doc, "Que significan estas senales", 56, afterMetricsY + 42, 23.5, CLEANIFY_BRAND.text, 500);
+  const signals = Array.isArray(sections.senales_positivas) && sections.senales_positivas.length
+    ? sections.senales_positivas
+    : [
+      "La tendencia muestra actividad, pero todavía necesita continuidad.",
+      "Las consultas con posición media entre 5 y 15 son candidatas para optimizar contenido y snippets.",
+      "El crecimiento orgánico debe cruzarse con llamadas, formularios y feedback comercial."
+    ];
+  drawV7BulletList(doc, signals, 74, afterMetricsY + 100, 450, { limit: 3, size: 10.5, gap: 10 });
+  drawClientFooter(doc, 3);
 }
 
-async function drawClientNextSteps(doc, report) {
+async function drawClientStrategicPage(doc, report) {
   const sections = report.client_report_sections || {};
-  doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.white);
+  fillPage(doc, CLEANIFY_BRAND.white);
   await drawClientHeader(doc);
-  drawTitle(doc, "Proximos pasos", 56, 118, 28);
+  drawV7Title(doc, "Lectura estrategica", 56, 112, 32, CLEANIFY_BRAND.text, 500);
+  drawV7Paragraph(doc, "El objetivo de esta página es transformar datos en decisiones: qué reforzar, qué vigilar y qué no conviene interpretar todavía.", 56, 166, 500, { size: 10.5, color: CLEANIFY_BRAND.muted });
+  let y = 236;
+  const positive = (sections.senales_positivas || []).slice(0, 2);
+  const watch = (sections.que_necesita_tiempo || []).slice(0, 2);
+  const opportunities = (sections.oportunidades_search_console || []).slice(0, 2);
+  const groups = [
+    ["Senales positivas", positive.length ? positive : ["La visibilidad orgánica empieza a mostrar patrones útiles.", "Hay consultas de servicio que pueden convertirse en oportunidades si se refuerzan páginas y snippets."]],
+    ["Senales a vigilar", watch.length ? watch : ["El volumen mensual aún es bajo, por lo que conviene evitar conclusiones fuertes.", "Faltan datos de llamadas, formularios o CRM para cerrar la foto comercial."]],
+    ["Oportunidades detectadas", opportunities.length ? opportunities : ["Optimizar páginas asociadas a consultas con impresiones y posición media entre 5 y 15.", "Reforzar servicios prioritarios con contenido más específico y enlazado interno."]]
+  ];
+  groups.forEach(([title, items]) => {
+    drawV7Title(doc, title, 56, y, 20.5, CLEANIFY_BRAND.text, 500);
+    y = drawV7BulletList(doc, items, 74, y + 48, 460, { limit: 3, size: 10.2, gap: 8 });
+    y += 24;
+  });
+  drawClientFooter(doc, 4);
+}
 
-  const defaultSteps = [
+async function drawClientWorkAndNextSteps(doc, report) {
+  const sections = report.client_report_sections || {};
+  fillPage(doc, CLEANIFY_BRAND.white);
+  await drawClientHeader(doc);
+  drawV7Title(doc, "Trabajo realizado", 56, 112, 32, CLEANIFY_BRAND.text, 500);
+  drawV7Paragraph(doc, "Acciones del periodo y enfoque operativo.", 56, 166, 500, { size: 10.5, color: CLEANIFY_BRAND.muted });
+  const work = Array.isArray(sections.que_se_ha_hecho) && sections.que_se_ha_hecho.length ? sections.que_se_ha_hecho : [
+    "Revisión de visibilidad orgánica y consultas principales.",
+    "Análisis de páginas con mayor potencial de captación.",
+    "Identificación de bloqueos de medición y datos comerciales pendientes."
+  ];
+  let y = drawV7BulletList(doc, work, 74, 220, 450, { limit: 4, size: 10.4, gap: 8 });
+  y += 28;
+  drawV7Title(doc, "Proximos pasos", 56, y, 32, CLEANIFY_BRAND.text, 500);
+  y += 64;
+  const steps = Array.isArray(sections.proximo_mes) && sections.proximo_mes.length ? sections.proximo_mes : [
     "Reforzar páginas que ya muestran impresiones o posiciones cercanas a primera página.",
     "Revisar eventos, formularios y seguimiento comercial para conectar datos con leads reales.",
     "Crear o mejorar contenidos de servicio/zona según prioridades comerciales."
   ];
-  const steps = Array.isArray(sections.proximo_mes) && sections.proximo_mes.length ? sections.proximo_mes : defaultSteps;
-  let y = 190;
   const titles = ["1. Visibilidad orgánica", "2. Conversión y medición", "3. SEO local y contenido"];
   steps.slice(0, 3).forEach((step, index) => {
-    doc.fillColor(CLEANIFY_BRAND.accent).font(pdfFonts(doc).bodyBold).fontSize(12).text(titles[index] || `Prioridad ${index + 1}`, 56, y, { width: 420 });
-    drawParagraph(doc, step, 56, y + 30, 470, { size: 10.2 });
-    y = doc.y + 36;
+    doc.fillColor(CLEANIFY_BRAND.accent).font(pdfFonts(doc).bodyBold).fontSize(11).text(titles[index] || `Prioridad ${index + 1}`, 56, y, { width: 420 });
+    y = drawV7Paragraph(doc, shortenText(step, 180), 56, y + 28, 470, { size: 10.2 });
+    y += 16;
   });
-
-  drawLine(doc, 56, 610, doc.page.width - 56, 610);
-  drawTitle(doc, "Que necesitamos", 56, 650, 23);
-  drawBulletList(doc, sections.necesitamos_del_cliente || [], 80, 700, 430, { limit: 4 });
+  drawClientFooter(doc, 5);
 }
 
 async function drawClientClose(doc, report) {
   const client = report.client || {};
   const logo = await getCleanifyLogoBuffer({ white: true });
-  doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.primary);
-  if (!drawLogoBuffer(doc, logo, 56, 58, { fit: [116, 34] })) {
-    doc.fillColor(CLEANIFY_BRAND.white).font(pdfFonts(doc).bodyBold).fontSize(16).text("CLEANIFY", 56, 62);
-  }
-  doc.rect(56, 190, 42, 3).fill(CLEANIFY_BRAND.accent);
-  drawTitle(doc, "Cierre", 56, 225, 34, CLEANIFY_BRAND.white, 460);
-  const closeText = "El proyecto sigue avanzando con una base de medición más clara. El siguiente paso será utilizar estos datos para priorizar mejor las acciones, reforzar las páginas con mayor potencial y conectar cada vez mejor la visibilidad con contactos reales.";
-  drawParagraph(doc, closeText, 56, 285, 455, { color: "#ffffff", size: 12, lineGap: 6 });
-  doc.fillColor("#9aa9ff").font(pdfFonts(doc).body).fontSize(9)
-    .text(`${client.name || "Cliente"} · Cleanify Reporting`, 56, doc.page.height - 82, { width: 300 });
+  fillPage(doc, CLEANIFY_BRAND.primary);
+  if (!drawLogoBuffer(doc, logo, 56, 64, { fit: [140, 34] })) drawFallbackLogo(doc, 56, 66, CLEANIFY_BRAND.white, 18);
+  doc.fillColor("#d8ddff").font(pdfFonts(doc).body).fontSize(9)
+    .text("Informe mensual SEO local", 350, 67, { width: 190, align: "right" });
+  drawV7Title(doc, "Cierre", 56, 120, 38, CLEANIFY_BRAND.white, 470);
+  const closeText = "El proyecto sigue avanzando con una base de medición más clara. El siguiente paso será usar estos datos para priorizar mejor las acciones, reforzar las páginas con mayor potencial y conectar cada vez mejor la visibilidad con contactos reales.";
+  drawV7Paragraph(doc, closeText, 56, 230, 480, { color: "#ffffff", size: 14, lineGap: 6 });
+  drawLine(doc, 56, 356, doc.page.width - 56, 356, CLEANIFY_BRAND.accent, 1.2);
+  drawV7Paragraph(doc, "Esta salida mantiene una lectura sobria, adaptable a clientes completos, parciales o con accesos pendientes, sin mostrar bloques vacíos innecesarios.", 56, 396, 500, { color: "#d8ddff", size: 10.5 });
+  doc.fillColor("#b9c2ff").font(pdfFonts(doc).body).fontSize(8)
+    .text("Cleanify - propuesta visual de informe mensual", 56, doc.page.height - 50, { width: 310, lineBreak: false });
+  doc.text("6", doc.page.width - 82, doc.page.height - 50, { width: 26, align: "right", lineBreak: false });
 }
 
 async function buildClientPdfBuffer(report, finalOutputs) {
@@ -2814,87 +2838,92 @@ async function buildClientPdfBuffer(report, finalOutputs) {
   const doc = createPdfKitDocument({ title: `Informe mensual · ${client.name || "Cliente"}` });
   const chunks = [];
   doc.on("data", (chunk) => chunks.push(chunk));
-
   await drawClientCover(doc, report);
   doc.addPage();
   await drawClientExecutiveSummary(doc, report);
   doc.addPage();
   await drawClientResults(doc, report);
   doc.addPage();
-  await drawClientNextSteps(doc, report);
+  await drawClientStrategicPage(doc, report);
+  doc.addPage();
+  await drawClientWorkAndNextSteps(doc, report);
   doc.addPage();
   await drawClientClose(doc, report);
-
   doc.end();
   await new Promise((resolve) => doc.on("end", resolve));
   return Buffer.concat(chunks);
 }
 
-async function buildInternalPdfBuffer(report, finalOutputs) {
-  const client = report.client || {};
-  const period = report.period || {};
-  const metrics = report.metrics_summary || {};
-  const internal = report.internal_summary_for_cleanify || {};
+function internalSourceRows(report) {
   const data = report.data_enrichment || {};
-  const sc = metrics.search_console || {};
-  const ga4 = metrics.ga4 || {};
-  const logo = await getCleanifyLogoBuffer({ white: true });
-  const doc = createPdfKitDocument({ title: `Informe interno Cleanify · ${client.name || "Cliente"}` });
-  const chunks = [];
-  doc.on("data", (chunk) => chunks.push(chunk));
-
-  const drawInternalBg = () => doc.rect(0, 0, doc.page.width, doc.page.height).fill(CLEANIFY_BRAND.primary);
-  const internalText = "#ffffff";
-  const internalMuted = "#c8d0ff";
-
-  drawInternalBg();
-  if (!drawLogoBuffer(doc, logo, 56, 54, { fit: [120, 36] })) {
-    doc.fillColor(internalText).font(pdfFonts(doc).bodyBold).fontSize(16).text("CLEANIFY", 56, 58);
-  }
-  doc.rect(56, 148, 42, 3).fill(CLEANIFY_BRAND.accent);
-  drawTitle(doc, "Informe interno", 56, 178, 32, internalText, 450);
-  doc.fillColor(internalMuted).font(pdfFonts(doc).body).fontSize(11)
-    .text(`Cliente: ${client.name || "Cliente"}`, 56, 226, { width: 470 })
-    .text(`Periodo: ${period.month || "mes analizado"}${period.previous_month ? ` frente a ${period.previous_month}` : ""}`, 56, 246, { width: 470 });
-
-  let y = 306;
-  const sourceRows = [
+  return [
     `GA4: ${data.ga4_real_data_loaded ? "cargado" : "no cargado"}`,
     `Search Console: ${data.search_console_real_data_loaded ? "cargado" : "no cargado"}`,
     `Propiedad GA4: ${valueOrDash(data.ga4_propertyId)}`,
     `Search Console: ${valueOrDash(data.search_console_siteUrl)}`
   ];
-  y = drawBulletList(doc, sourceRows, 74, y, 440, { color: internalText, bulletColor: CLEANIFY_BRAND.accent, limit: 4, size: 10 });
+}
 
-  const sections = [
-    ["Lectura real del mes", [internal.lectura_real_del_mes || "Revisar evolución del mes con datos reales disponibles y foco comercial."]],
-    ["Riesgos o bloqueos", internal.riesgos_o_bloqueos || []],
-    ["Recomendaciones organicas", [
-      ...((sc.opportunities || []).map((item) => `Oportunidad Search Console: ${stringifyPdfItem(item)}`)),
-      ...((internal.que_vigilar || []).slice(0, 5)),
-      ...((ga4.lead_events || []).length ? [`Revisar calidad de eventos de contacto: ${(ga4.lead_events || []).map((e) => stringifyPdfItem(e)).join("; ")}`] : [])
-    ]],
-    ["Que debe decir account manager", [internal.que_debe_decir_account_manager || "Explicar el avance con calma, qué se está construyendo y cuál será el foco del próximo mes."]],
-    ["Que no conviene prometer", [internal.que_no_conviene_prometer || "No prometer posiciones, leads garantizados ni resultados inmediatos."]],
-    ["Accion prioritaria 80/20", [internal.proxima_accion_prioritaria || "Definir la acción de mayor impacto para el próximo mes."]]
+function internalRecommendations(report) {
+  const internal = report.internal_summary_for_cleanify || {};
+  const metrics = report.metrics_summary || {};
+  const sc = metrics.search_console || {};
+  const ga4 = metrics.ga4 || {};
+  const items = [
+    ...((sc.opportunities || []).map((item) => `Oportunidad Search Console: ${stringifyPdfItem(item)}`)),
+    ...((internal.que_vigilar || []).slice(0, 5)),
+    ...((ga4.lead_events || []).length ? [`Revisar calidad de eventos de contacto: ${(ga4.lead_events || []).map((e) => stringifyPdfItem(e)).join("; ")}`] : [])
+  ].filter(Boolean);
+  return items.length ? items : ["Calidad de leads.", "Llamadas perdidas.", "Páginas con muchas impresiones y pocos clics.", "Consultas con posición media entre 5 y 15."];
+}
+
+async function drawInternalPageOne(doc, report) {
+  const client = report.client || {};
+  const period = report.period || {};
+  const internal = report.internal_summary_for_cleanify || {};
+  const logo = await getCleanifyLogoBuffer({ white: true });
+  fillPage(doc, CLEANIFY_BRAND.primary);
+  if (!drawLogoBuffer(doc, logo, 56, 62, { fit: [142, 34] })) drawFallbackLogo(doc, 56, 66, CLEANIFY_BRAND.white, 18);
+  doc.rect(56, 150, 42, 3).fill(CLEANIFY_BRAND.accent);
+  drawV7Title(doc, "Informe interno", 56, 176, 31, CLEANIFY_BRAND.white, 470);
+  doc.fillColor("#d8ddff").font(pdfFonts(doc).body).fontSize(11)
+    .text(`Cliente: ${client.name || "Cliente"}`, 56, 235, { width: 470 })
+    .text(`Periodo: ${period.month || "mes analizado"}${period.previous_month ? ` frente a ${period.previous_month}` : ""}`, 56, 255, { width: 470 });
+  let y = drawV7BulletList(doc, internalSourceRows(report), 76, 318, 440, { color: "#ffffff", bulletColor: CLEANIFY_BRAND.accent, limit: 4, size: 10, gap: 10 });
+  y += 34;
+  drawV7Title(doc, "Lectura real del mes", 56, y, 21, CLEANIFY_BRAND.white, 480);
+  y = drawV7BulletList(doc, [internal.lectura_real_del_mes || "Revisar evolución del mes con datos reales disponibles y foco comercial."], 76, y + 52, 438, { color: "#ffffff", bulletColor: CLEANIFY_BRAND.accent, limit: 1, size: 9.4, gap: 8 });
+  y += 24;
+  drawV7Title(doc, "Riesgos o bloqueos", 56, y, 21, CLEANIFY_BRAND.white, 480);
+  drawV7BulletList(doc, internal.riesgos_o_bloqueos || [], 76, y + 52, 438, { color: "#ffffff", bulletColor: CLEANIFY_BRAND.accent, limit: 6, size: 9.2, gap: 8, lineGap: 3 });
+}
+
+async function drawInternalPageTwo(doc, report) {
+  const internal = report.internal_summary_for_cleanify || {};
+  fillPage(doc, CLEANIFY_BRAND.primary);
+  let y = 72;
+  const groups = [
+    ["Recomendaciones organicas", internalRecommendations(report), 6],
+    ["Que debe decir account manager", [internal.que_debe_decir_account_manager || "Explicar el avance con calma: qué se ha construido, qué señales empiezan a verse y qué se priorizará el próximo mes."], 1],
+    ["Que no conviene prometer", [internal.que_no_conviene_prometer || "No prometer posiciones, leads garantizados ni resultados inmediatos si el proyecto aún está construyendo base."], 1],
+    ["Accion prioritaria 80/20", [internal.proxima_accion_prioritaria || "Definir la acción de mayor impacto para el próximo mes."], 1]
   ];
+  groups.forEach(([title, items, limit]) => {
+    drawV7Title(doc, title, 56, y, 20.5, CLEANIFY_BRAND.white, 500);
+    y = drawV7BulletList(doc, items, 76, y + 52, 438, { color: "#ffffff", bulletColor: CLEANIFY_BRAND.accent, limit, size: 9.6, gap: 10, lineGap: 3 });
+    y += 22;
+  });
+  drawInternalFooter(doc);
+}
 
-  y += 28;
-  for (const [title, items] of sections) {
-    if (y > 700) {
-      doc.addPage();
-      drawInternalBg();
-      y = 74;
-    }
-    drawTitle(doc, title, 56, y, 21, internalText, 480);
-    y += 42;
-    y = drawBulletList(doc, items, 74, y, 440, { color: internalText, bulletColor: CLEANIFY_BRAND.accent, limit: 7, size: 9.6 });
-    y += 18;
-  }
-
-  doc.fillColor(internalMuted).font(pdfFonts(doc).body).fontSize(8.2)
-    .text("Cleanify · informe interno", 56, doc.page.height - 72, { width: 260, lineBreak: false });
-
+async function buildInternalPdfBuffer(report, finalOutputs) {
+  const client = report.client || {};
+  const doc = createPdfKitDocument({ title: `Informe interno Cleanify · ${client.name || "Cliente"}` });
+  const chunks = [];
+  doc.on("data", (chunk) => chunks.push(chunk));
+  await drawInternalPageOne(doc, report);
+  doc.addPage();
+  await drawInternalPageTwo(doc, report);
   doc.end();
   await new Promise((resolve) => doc.on("end", resolve));
   return Buffer.concat(chunks);
@@ -3283,6 +3312,7 @@ app.get("/health", (req, res) => {
       chat_client_report_data: `${BASE_URL}/chat/client-report-data`,
       monthly_report: `${BASE_URL}/api/report/monthly`,
       monthly_report_html: `${BASE_URL}/api/report/monthly/html`,
+      official_pdf_renderer: `${BASE_URL}/api/report/render`,
       mcp: `${BASE_URL}/mcp`
     }
   });
@@ -3764,6 +3794,40 @@ app.post("/api/report/monthly/internal-pdf", async (req, res) => {
     return res.send(buffer);
   } catch (error) {
     return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando PDF interno.", details: error.message });
+  }
+});
+
+
+app.post("/api/report/render", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const templateId = String(body.template_id || body.templateId || body.audience || "client_v7").toLowerCase().trim();
+    const input = body.input || body.report_input || body.data || body;
+    const normalizedAudience = templateId.includes("internal") || templateId.includes("interno") ? "internal" : "client";
+
+    let report = body.report && typeof body.report === "object" ? body.report : null;
+    let final_outputs = body.final_outputs && typeof body.final_outputs === "object" ? body.final_outputs : null;
+
+    if (!report) {
+      const enrichedInput = await enrichInputWithGoogleData({ ...input, audience: normalizedAudience });
+      report = buildMonthlyReport(enrichedInput);
+      final_outputs = buildFinalReportOutputs(report);
+    } else if (!final_outputs) {
+      final_outputs = buildFinalReportOutputs(report);
+    }
+
+    const buffer = normalizedAudience === "internal"
+      ? await buildInternalPdfBuffer(report, final_outputs)
+      : await buildClientPdfBuffer(report, final_outputs);
+
+    const fileName = `${escapeFilePart(report.client?.name)}-${escapeFilePart(report.period?.month)}-${normalizedAudience === "internal" ? "interno-cleanify" : "cliente"}-v7.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+    res.setHeader("X-Cleanify-Template-Id", normalizedAudience === "internal" ? "internal_v7" : "client_v7");
+    res.setHeader("X-Cleanify-Renderer", "locked-pdfkit-v7");
+    return res.send(buffer);
+  } catch (error) {
+    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error en render oficial Cleanify v7.", details: error.message });
   }
 });
 
