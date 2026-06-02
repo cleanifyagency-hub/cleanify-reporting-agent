@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.0-locked-cleanify-v7-renderer";
+const APP_VERSION = "1.10.1-locked-cleanify-v7-routes";
 
 app.use(express.json({ limit: "4mb" }));
 
@@ -3337,8 +3337,13 @@ app.get("/debug/routes", (req, res) => {
       "POST /chat/client-report-data",
       "GET /ga4/monthly",
       "GET /search-console/monthly",
-      "POST /api/report/monthly",
+      "GET /reports/:fileName",
+      "POST /api/report/monthly/client-pdf",
+      "POST /api/report/monthly/internal-pdf",
+      "POST /api/report/render",
+      "POST /api/report/monthly/package",
       "POST /api/report/monthly/html",
+      "POST /api/report/monthly",
       "POST /mcp",
       "GET /openapi.json"
     ]
