@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.5-locked-cleanify-v7-font-render-fix";
+const APP_VERSION = "1.10.6-locked-cleanify-v7-manual-n-semibold";
 
 function resolveExistingPath(candidates = []) {
   for (const candidate of candidates) {
@@ -2558,17 +2558,29 @@ function drawSemiBoldText(doc, text, x, y, options = {}) {
     lineBreak: options.lineBreak,
     characterSpacing: options.characterSpacing
   };
+
   doc.fillColor(color).font(font).fontSize(size);
   doc.text(clean, x, y, textOptions);
   const endY = doc.y;
+
+  // Stronger faux semibold when only Montserrat Regular is available.
+  const offsets = [
+    [0.18, 0],
+    [0.00, 0.16],
+    [0.18, 0.16]
+  ];
   doc.save();
-  doc.opacity(0.45);
-  doc.fillColor(color).font(font).fontSize(size);
-  doc.text(clean, x + 0.18, y, textOptions);
+  doc.opacity(0.62);
+  offsets.forEach(([dx, dy]) => {
+    doc.fillColor(color).font(font).fontSize(size);
+    doc.text(clean, x + dx, y + dy, textOptions);
+  });
   doc.restore();
+
   doc.y = endY;
   return endY;
 }
+
 
 
 function sanitizePdfText(value) {
@@ -2665,26 +2677,88 @@ function fillPage(doc, color = CLEANIFY_BRAND.white) {
 }
 
 function drawV7Title(doc, text, x, y, size = 32, color = CLEANIFY_BRAND.text, width = 470) {
-  const runs = splitTitleRuns(text);
+  const title = titleDisplayText(text);
   let cx = x;
   let cy = y;
   const lineHeight = size * 1.18;
-  runs.forEach((run) => {
-    const font = run.mode === "fallback" ? pdfFonts(doc).bodyBold : pdfFonts(doc).title;
-    doc.fillColor(color).font(font).fontSize(size);
-    for (const char of run.text) {
-      const charWidth = doc.widthOfString(char);
-      if (cx > x && cx + charWidth > x + width) {
-        cx = x;
-        cy += lineHeight;
-      }
-      doc.fillColor(color).font(font).fontSize(size).text(char, cx, cy, { lineBreak: false });
-      cx += charWidth;
+
+  function nextLine() {
+    cx = x;
+    cy += lineHeight;
+  }
+
+  for (let i = 0; i < title.length; i += 1) {
+    const char = title[i];
+
+    if (char === "\\n") {
+      nextLine();
+      continue;
     }
-  });
+
+    // Keep normal spacing but wrap safely.
+    const cleanifyFont = pdfFonts(doc).title;
+    const fallbackFont = pdfFonts(doc).bodyBold;
+    let printable = char;
+    let font = cleanifyFont;
+
+    if (char === "Ñ") {
+      printable = "N";
+      font = cleanifyFont;
+    } else if (char === "/") {
+      printable = "/";
+      font = fallbackFont;
+    }
+
+    doc.font(font).fontSize(size);
+    let charWidth = doc.widthOfString(printable || " ");
+
+    if (char === " ") {
+      charWidth = Math.max(charWidth, size * 0.28);
+    }
+
+    if (cx > x && cx + charWidth > x + width) {
+      nextLine();
+    }
+
+    if (char === "/") {
+      // Draw slash manually to avoid broken glyphs in decorative font.
+      const slashW = Math.max(size * 0.28, charWidth);
+      doc.save();
+      doc.strokeColor(color).lineWidth(Math.max(1.2, size * 0.075));
+      doc.moveTo(cx + slashW * 0.18, cy + size * 0.90);
+      doc.lineTo(cx + slashW * 0.78, cy + size * 0.18);
+      doc.stroke();
+      doc.restore();
+      cx += slashW;
+      continue;
+    }
+
+    doc.fillColor(color).font(font).fontSize(size).text(printable, cx, cy, { lineBreak: false });
+
+    if (char === "Ñ") {
+      // Manual tilde to preserve Ñ with the Cleanify title font.
+      const tildeY = cy + size * 0.03;
+      const tildeW = Math.max(size * 0.30, charWidth * 0.62);
+      const tildeX = cx + (charWidth - tildeW) / 2;
+      doc.save();
+      doc.strokeColor(color).lineWidth(Math.max(1.1, size * 0.055));
+      doc.moveTo(tildeX, tildeY + size * 0.05);
+      doc.bezierCurveTo(
+        tildeX + tildeW * 0.25, tildeY - size * 0.04,
+        tildeX + tildeW * 0.55, tildeY + size * 0.14,
+        tildeX + tildeW, tildeY + size * 0.03
+      );
+      doc.stroke();
+      doc.restore();
+    }
+
+    cx += charWidth;
+  }
+
   doc.y = cy + lineHeight;
   return doc.y;
 }
+
 
 
 function drawV7Paragraph(doc, text, x, y, width, options = {}) {
