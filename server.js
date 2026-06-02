@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.7-locked-cleanify-v7-n-body-weight";
+const APP_VERSION = "1.10.8-locked-cleanify-v7-text-weight-tune";
 
 function resolveExistingPath(candidates = []) {
   for (const candidate of candidates) {
@@ -2563,17 +2563,14 @@ function drawSemiBoldText(doc, text, x, y, options = {}) {
   doc.text(clean, x, y, textOptions);
   const endY = doc.y;
 
-  // Strong faux semibold for Montserrat Regular when no Montserrat SemiBold file exists.
-  const offsets = [
-    [0.22, 0],
-    [0.00, 0.20],
-    [0.22, 0.20],
-    [0.34, 0.08],
-    [0.08, 0.34]
-  ];
+  // Faux semibold for Montserrat Regular when SemiBold/Bold is not available.
+  const strength = options.strong === false ? 0.72 : 0.94;
+  const offsets = options.compact
+    ? [[0.20, 0], [0.00, 0.18], [0.20, 0.18]]
+    : [[0.24, 0], [0.00, 0.22], [0.24, 0.22], [0.36, 0.08], [0.08, 0.36]];
 
   doc.save();
-  doc.opacity(0.86);
+  doc.opacity(strength);
   offsets.forEach(([dx, dy]) => {
     doc.fillColor(color).font(font).fontSize(size);
     doc.text(clean, x + dx, y + dy, textOptions);
@@ -2583,6 +2580,7 @@ function drawSemiBoldText(doc, text, x, y, options = {}) {
   doc.y = endY;
   return endY;
 }
+
 
 
 
@@ -2875,17 +2873,23 @@ function drawClientMetricRows(doc, metrics, x, y, width) {
         height: 34,
         ellipsis: true
       });
-    doc.fillColor(CLEANIFY_BRAND.muted)
-      .font(pdfFonts(doc).body)
-      .fontSize(8.8)
-      .text(metric.previous || "Sin comparativa", xx + 18, yy + 78, {
-        width: cardW - 36
-      });
+    drawSemiBoldText(doc, metric.previous || "Sin comparativa", xx + 18, yy + 78, {
+      width: cardW - 36,
+      font: pdfFonts(doc).body,
+      size: 8.8,
+      color: CLEANIFY_BRAND.muted,
+      lineGap: 1,
+      compact: true
+    });
     if (metric.variation) {
-      doc.fillColor(metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success)
-        .font(pdfFonts(doc).bodyBold)
-        .fontSize(8.8)
-        .text(metric.variation, xx + 18, yy + 95, { width: cardW - 36 });
+      drawSemiBoldText(doc, metric.variation, xx + 18, yy + 95, {
+        width: cardW - 36,
+        font: pdfFonts(doc).body,
+        size: 8.8,
+        color: metric.isPositive === false ? CLEANIFY_BRAND.muted : CLEANIFY_BRAND.success,
+        lineGap: 1,
+        compact: true
+      });
     }
   });
   return y + rows * cardH + (rows - 1) * 16 + 30;
@@ -2948,7 +2952,14 @@ async function drawClientExecutiveSummary(doc, report) {
   let y = 236;
   blocks.forEach((block) => {
     doc.rect(56, y + 7, 28, 2.2).fill(CLEANIFY_BRAND.accent);
-    doc.fillColor(CLEANIFY_BRAND.text).font(pdfFonts(doc).bodyBold).fontSize(12.5).text(block.title, 96, y, { width: 410 });
+    drawSemiBoldText(doc, block.title, 96, y, {
+      width: 410,
+      font: pdfFonts(doc).body,
+      size: 12.5,
+      color: CLEANIFY_BRAND.text,
+      lineGap: 1,
+      compact: true
+    });
     y = drawV7Paragraph(doc, shortenText(block.text, 330), 96, y + 36, 410, { size: 10.2, lineGap: 4 });
     y += 37;
   });
@@ -3022,7 +3033,14 @@ async function drawClientWorkAndNextSteps(doc, report) {
   ];
   const titles = ["1. Visibilidad orgánica", "2. Conversión y medición", "3. SEO local y contenido"];
   steps.slice(0, 3).forEach((step, index) => {
-    doc.fillColor(CLEANIFY_BRAND.accent).font(pdfFonts(doc).bodyBold).fontSize(11).text(titles[index] || `Prioridad ${index + 1}`, 56, y, { width: 420 });
+    drawSemiBoldText(doc, titles[index] || `Prioridad ${index + 1}`, 56, y, {
+      width: 420,
+      font: pdfFonts(doc).body,
+      size: 11,
+      color: CLEANIFY_BRAND.accent,
+      lineGap: 1,
+      compact: true
+    });
     y = drawV7Paragraph(doc, shortenText(step, 180), 56, y + 28, 470, { size: 10.2 });
     y += 16;
   });
