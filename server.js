@@ -19,7 +19,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.4-locked-cleanify-v7-fonts";
+const APP_VERSION = "1.10.5-locked-cleanify-v7-font-render-fix";
 
 function resolveExistingPath(candidates = []) {
   for (const candidate of candidates) {
@@ -2516,10 +2516,60 @@ function formatPdfPercent(value) {
 
 function titleDisplayText(value) {
   return String(value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
+    .trim()
+    .toUpperCase()
+    .replace(/[ÁÀÂÄÃÅ]/g, "A")
+    .replace(/[ÉÈÊË]/g, "E")
+    .replace(/[ÍÌÎÏ]/g, "I")
+    .replace(/[ÓÒÔÖÕ]/g, "O")
+    .replace(/[ÚÙÛÜ]/g, "U")
+    .replace(/Ç/g, "C");
 }
+
+function splitTitleRuns(value) {
+  const text = titleDisplayText(value);
+  const runs = [];
+  let current = "";
+  let mode = null;
+  for (const char of text) {
+    const fallback = /[^A-Z0-9 %\-]/.test(char);
+    const nextMode = fallback ? "fallback" : "cleanify";
+    if (mode && nextMode !== mode) {
+      runs.push({ text: current, mode });
+      current = "";
+    }
+    current += char;
+    mode = nextMode;
+  }
+  if (current) runs.push({ text: current, mode });
+  return runs;
+}
+
+function drawSemiBoldText(doc, text, x, y, options = {}) {
+  const clean = sanitizePdfText(text);
+  if (!clean) return y;
+  const font = options.font || pdfFonts(doc).body;
+  const size = options.size || 10.5;
+  const color = options.color || CLEANIFY_BRAND.text;
+  const textOptions = {
+    width: options.width,
+    lineGap: options.lineGap ?? 4,
+    align: options.align || "left",
+    lineBreak: options.lineBreak,
+    characterSpacing: options.characterSpacing
+  };
+  doc.fillColor(color).font(font).fontSize(size);
+  doc.text(clean, x, y, textOptions);
+  const endY = doc.y;
+  doc.save();
+  doc.opacity(0.45);
+  doc.fillColor(color).font(font).fontSize(size);
+  doc.text(clean, x + 0.18, y, textOptions);
+  doc.restore();
+  doc.y = endY;
+  return endY;
+}
+
 
 function sanitizePdfText(value) {
   return String(value ?? "")
@@ -2615,19 +2665,42 @@ function fillPage(doc, color = CLEANIFY_BRAND.white) {
 }
 
 function drawV7Title(doc, text, x, y, size = 32, color = CLEANIFY_BRAND.text, width = 470) {
-  doc.fillColor(color).font(pdfFonts(doc).title).fontSize(size)
-    .text(titleDisplayText(text), x, y, { width, lineGap: 1 });
+  const runs = splitTitleRuns(text);
+  let cx = x;
+  let cy = y;
+  const lineHeight = size * 1.18;
+  runs.forEach((run) => {
+    const font = run.mode === "fallback" ? pdfFonts(doc).bodyBold : pdfFonts(doc).title;
+    doc.fillColor(color).font(font).fontSize(size);
+    for (const char of run.text) {
+      const charWidth = doc.widthOfString(char);
+      if (cx > x && cx + charWidth > x + width) {
+        cx = x;
+        cy += lineHeight;
+      }
+      doc.fillColor(color).font(font).fontSize(size).text(char, cx, cy, { lineBreak: false });
+      cx += charWidth;
+    }
+  });
+  doc.y = cy + lineHeight;
   return doc.y;
 }
+
 
 function drawV7Paragraph(doc, text, x, y, width, options = {}) {
   const clean = sanitizePdfText(text);
   if (!clean) return y;
   const font = options.bold ? pdfFonts(doc).bodyBold : pdfFonts(doc).body;
-  doc.fillColor(options.color || CLEANIFY_BRAND.text).font(font).fontSize(options.size || 10.5)
-    .text(clean, x, y, { width, lineGap: options.lineGap ?? 4, align: options.align || "left" });
-  return doc.y;
+  return drawSemiBoldText(doc, clean, x, y, {
+    width,
+    font,
+    size: options.size || 10.5,
+    color: options.color || CLEANIFY_BRAND.text,
+    lineGap: options.lineGap ?? 4,
+    align: options.align || "left"
+  });
 }
+
 
 function drawLabel(doc, text, x, y, options = {}) {
   doc.fillColor(options.color || CLEANIFY_BRAND.muted).font(pdfFonts(doc).bodyBold).fontSize(options.size || 8)
@@ -2648,8 +2721,13 @@ function drawV7BulletList(doc, items, x, y, width, options = {}) {
   list.slice(0, limit).forEach((item) => {
     const text = stringifyPdfItem(item);
     doc.fillColor(bulletColor).circle(x + 3, cy + 6, 2.2).fill();
-    doc.fillColor(color).font(pdfFonts(doc).body).fontSize(size)
-      .text(text, x + 18, cy, { width: width - 18, lineGap: options.lineGap ?? 4 });
+    drawSemiBoldText(doc, text, x + 18, cy, {
+      width: width - 18,
+      font: pdfFonts(doc).body,
+      size,
+      color,
+      lineGap: options.lineGap ?? 4
+    });
     cy = doc.y + (options.gap ?? 10);
   });
   return cy;
