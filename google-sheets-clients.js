@@ -124,11 +124,7 @@ export async function getClientsFromSheet({
 
   const clients = rows
     .map((row) => mapRowToClient(headers, row))
-    .filter((client) => client.client_id && client.name)
-    .filter((client) => {
-      const estado = String(client.estado || "").toLowerCase();
-      return estado !== "baja";
-    });
+    .filter((client) => client.client_id && client.name);
 
   return {
     ok: true,

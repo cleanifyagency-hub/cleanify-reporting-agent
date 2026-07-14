@@ -6,6 +6,13 @@ import {
 import { getSearchConsoleMonthlyData } from "./google-search-console.js";
 import { getClientsFromSheet } from "./google-sheets-clients.js";
 import { listAvailableAssets, resolveClientAssets } from "./google-assets.js";
+import { getAutomaticClientCatalog, assertClientReportable } from "./client-catalog.js";
+import {
+  buildMonthlyReport,
+  buildFinalReportOutputs,
+  buildClientPdfBuffer,
+  buildInternalPdfBuffer
+} from "./report-v2.js";
 import express from "express";
 import PDFDocument from "pdfkit";
 import fs from "fs";
@@ -19,7 +26,7 @@ const app = express();
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "https://reportes.cleanify.agency";
-const APP_VERSION = "1.10.8-locked-cleanify-v7-text-weight-tune";
+const APP_VERSION = "2.0.0-auto-catalog-dual-reporting";
 
 function resolveExistingPath(candidates = []) {
   for (const candidate of candidates) {
@@ -174,33 +181,30 @@ function sheetClientToKnownClient(client = {}) {
     searchConsoleSiteUrl: client.searchConsoleSiteUrl || undefined,
     sector: client.sector || null,
     location: client.location || null,
-    priorityServices: client.priorityServices || []
+    priorityServices: client.priorityServices || [],
+    estado: client.estado || "active",
+    status: client.estado || "active",
+    reportingAllowed: !["baja", "inactivo", "inactive", "pausado", "paused"].includes(normalizeText(client.estado)),
+    reporting_allowed: !["baja", "inactivo", "inactive", "pausado", "paused"].includes(normalizeText(client.estado))
   };
 }
 
 async function getKnownClientDirectory() {
   try {
-    const sheetResult = await getClientsFromSheet();
-    const sheetClients = Array.isArray(sheetResult?.clients) ? sheetResult.clients : [];
-
-    if (sheetClients.length > 0) {
-      return {
-        source: "google_sheet",
-        clients: sheetClients.map(sheetClientToKnownClient)
-      };
-    }
-
-    return {
-      source: "fallback_server_empty_sheet",
-      clients: CLIENT_DIRECTORY
-    };
+    return await getAutomaticClientCatalog({ includeInactive: true });
   } catch (error) {
-    console.warn("No se pudo cargar el directorio desde Google Sheets. Se usa fallback local:", error.message);
+    console.warn("No se pudo descubrir el inventario vivo de Google. Se usa fallback local:", error.message);
 
     return {
       source: "fallback_server",
       error: error.message,
-      clients: CLIENT_DIRECTORY
+      clients: CLIENT_DIRECTORY.map((client) => ({
+        ...client,
+        estado: normalizeDomain(client.domain) === "econeta.es" ? "inactive" : "active",
+        status: normalizeDomain(client.domain) === "econeta.es" ? "inactive" : "active",
+        reportingAllowed: normalizeDomain(client.domain) !== "econeta.es",
+        reporting_allowed: normalizeDomain(client.domain) !== "econeta.es"
+      }))
     };
   }
 }
@@ -221,10 +225,13 @@ function findKnownClientInDirectory(input = {}, directory = CLIENT_DIRECTORY) {
     client.domain,
     input.search_console?.siteUrl,
     input.searchConsoleSiteUrl,
-    input.siteUrl
+    input.siteUrl,
+    input.ga4PropertyId,
+    input.propertyId
   ].filter(Boolean);
 
   const normalizedCandidates = candidates.map((candidate) => ({
+    raw: String(candidate),
     text: normalizeText(candidate),
     domain: normalizeDomain(candidate)
   }));
@@ -236,6 +243,7 @@ function findKnownClientInDirectory(input = {}, directory = CLIENT_DIRECTORY) {
       known.searchConsoleSiteUrl,
       ...(known.aliases || [])
     ].map(normalizeDomain);
+    const knownPropertyIds = [known.ga4PropertyId, known.propertyId].filter(Boolean).map(String);
 
     return normalizedCandidates.some((candidate) => {
       return (
@@ -254,7 +262,8 @@ function findKnownClientInDirectory(input = {}, directory = CLIENT_DIRECTORY) {
             candidate.domain.includes(domain) ||
             domain.includes(candidate.domain)
           )
-        )
+        ) ||
+        knownPropertyIds.includes(candidate.raw)
       );
     });
   }) || null;
@@ -359,19 +368,19 @@ function prepareReportInputWithKnownClient(input = {}, knownClient = null) {
   const searchConsoleInput = input.search_console || {};
 
   const domain =
+    knownClient?.domain ||
     client.domain ||
     input.domain ||
     input.clientDomain ||
     input.client_domain ||
-    knownClient?.domain ||
     null;
 
   const clientName =
+    knownClient?.name ||
     client.name ||
     input.clientName ||
     input.client_name ||
     input.name ||
-    knownClient?.name ||
     null;
 
   const finalClient = {
@@ -385,7 +394,11 @@ function prepareReportInputWithKnownClient(input = {}, knownClient = null) {
       input.priority_services ||
       input.priorityServices ||
       knownClient?.priorityServices ||
-      []
+      [],
+    status: knownClient?.status || knownClient?.estado || client.status || client.estado || null,
+    estado: knownClient?.estado || knownClient?.status || client.estado || client.status || null,
+    reportingAllowed: knownClient?.reportingAllowed ?? knownClient?.reporting_allowed ?? client.reportingAllowed ?? client.reporting_allowed ?? null,
+    catalog_source: knownClient?.source || null
   };
 
   const startDate =
@@ -469,8 +482,13 @@ function prepareReportInput(input = {}) {
 }
 
 async function prepareReportInputAsync(input = {}) {
+  if (input?._clientCatalogChecked) return input;
   const knownClient = await findKnownClientAsync(input);
-  return prepareReportInputWithKnownClient(input, knownClient);
+  assertClientReportable(knownClient, { allowInactiveClient: input.allowInactiveClient === true });
+  return {
+    ...prepareReportInputWithKnownClient(input, knownClient),
+    _clientCatalogChecked: true
+  };
 }
 
 
@@ -1551,7 +1569,7 @@ async function buildClientDiagnostics(input = {}) {
     clients: []
   }));
 
-  const preparedInput = await prepareReportInputAsync(input);
+  const preparedInput = await prepareReportInputAsync({ ...input, allowInactiveClient: true });
   const client = preparedInput.client || {};
 
   let assetsResolution = null;
@@ -1696,7 +1714,7 @@ async function enrichInputWithGoogleData(input) {
   return withSearchConsole;
 }
 
-function buildMonthlyReport(data) {
+function buildMonthlyReportLegacy(data) {
   const client = data.client || {};
   const period = data.period || {};
   const ga4 = data.ga4 || {};
@@ -1997,7 +2015,7 @@ function listToMarkdown(items) {
   }).join("\n");
 }
 
-function buildFinalReportOutputs(report) {
+function buildFinalReportOutputsLegacy(report) {
   const client = report.client || {};
   const period = report.period || {};
   const sections = report.client_report_sections || {};
@@ -3064,7 +3082,7 @@ async function drawClientClose(doc, report) {
   doc.text("6", doc.page.width - 82, doc.page.height - 50, { width: 26, align: "right", lineBreak: false });
 }
 
-async function buildClientPdfBuffer(report, finalOutputs) {
+async function buildClientPdfBufferLegacy(report, finalOutputs) {
   const client = report.client || {};
   const doc = createPdfKitDocument({ title: `Informe mensual · ${client.name || "Cliente"}` });
   const chunks = [];
@@ -3147,7 +3165,7 @@ async function drawInternalPageTwo(doc, report) {
   drawInternalFooter(doc);
 }
 
-async function buildInternalPdfBuffer(report, finalOutputs) {
+async function buildInternalPdfBufferLegacy(report, finalOutputs) {
   const client = report.client || {};
   const doc = createPdfKitDocument({ title: `Informe interno Cleanify · ${client.name || "Cliente"}` });
   const chunks = [];
@@ -3500,7 +3518,10 @@ function createMcpServer() {
           domain: client.domain,
           ga4PropertyId: client.ga4PropertyId,
           searchConsoleSiteUrl: client.searchConsoleSiteUrl,
-          aliases: client.aliases || []
+          aliases: client.aliases || [],
+          status: client.status || client.estado || null,
+          reportingAllowed: client.reportingAllowed ?? client.reporting_allowed ?? null,
+          discovered_from: client.discovered_from || []
         }))
       };
 
@@ -3583,32 +3604,38 @@ app.get("/debug/routes", (req, res) => {
 
 app.get("/clients", async (req, res) => {
   try {
-    const sheetResult = await getClientsFromSheet();
+    const includeInactive = String(req.query.includeInactive || "").toLowerCase() === "true";
+    const catalog = await getAutomaticClientCatalog({ includeInactive });
 
     return res.json({
       ok: true,
       version: APP_VERSION,
-      source: "google_sheet",
-      count: sheetResult.clients.length,
-      clients: sheetResult.clients
+      source: catalog.source,
+      automatic_onboarding: true,
+      include_inactive: includeInactive,
+      count: catalog.clients.length,
+      counts: catalog.counts,
+      warnings: catalog.warnings,
+      clients: catalog.clients
     });
   } catch (error) {
-    console.error("No se pudieron cargar clientes desde Google Sheets:", error);
+    console.error("No se pudo descubrir el catálogo automático de Google:", error);
+    const includeInactive = String(req.query.includeInactive || "").toLowerCase() === "true";
+    const fallbackClients = CLIENT_DIRECTORY.map((client) => ({
+      ...client,
+      status: normalizeDomain(client.domain) === "econeta.es" ? "inactive" : "active",
+      reportingAllowed: normalizeDomain(client.domain) !== "econeta.es"
+    })).filter((client) => includeInactive || client.reportingAllowed);
 
     return res.json({
       ok: true,
       version: APP_VERSION,
       source: "fallback_server",
-      warning: "No se pudieron cargar clientes desde Google Sheets. Se usa CLIENT_DIRECTORY como respaldo.",
+      automatic_onboarding: false,
+      warning: "No se pudo consultar el inventario vivo de Google. Se usa un respaldo local temporal.",
       details: error.message,
-      count: CLIENT_DIRECTORY.length,
-      clients: CLIENT_DIRECTORY.map((client) => ({
-        name: client.name,
-        domain: client.domain,
-        ga4PropertyId: client.ga4PropertyId,
-        searchConsoleSiteUrl: client.searchConsoleSiteUrl,
-        aliases: client.aliases || []
-      }))
+      count: fallbackClients.length,
+      clients: fallbackClients
     });
   }
 });
@@ -4013,7 +4040,7 @@ app.post("/api/report/monthly/client-pdf", async (req, res) => {
     res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
     return res.send(buffer);
   } catch (error) {
-    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando PDF cliente.", details: error.message });
+    return res.status(error.statusCode || 500).json({ ok: false, version: APP_VERSION, code: error.code || null, error: "Error generando PDF cliente.", details: error.message });
   }
 });
 
@@ -4029,7 +4056,7 @@ app.post("/api/report/monthly/internal-pdf", async (req, res) => {
     res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
     return res.send(buffer);
   } catch (error) {
-    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando PDF interno.", details: error.message });
+    return res.status(error.statusCode || 500).json({ ok: false, version: APP_VERSION, code: error.code || null, error: "Error generando PDF interno.", details: error.message });
   }
 });
 
@@ -4037,7 +4064,7 @@ app.post("/api/report/monthly/internal-pdf", async (req, res) => {
 app.post("/api/report/render", async (req, res) => {
   try {
     const body = req.body || {};
-    const templateId = String(body.template_id || body.templateId || body.audience || "client_v7").toLowerCase().trim();
+    const templateId = String(body.template_id || body.templateId || body.audience || "client_v8").toLowerCase().trim();
     const input = body.input || body.report_input || body.data || body;
     const normalizedAudience = templateId.includes("internal") || templateId.includes("interno") ? "internal" : "client";
 
@@ -4048,22 +4075,25 @@ app.post("/api/report/render", async (req, res) => {
       const enrichedInput = await enrichInputWithGoogleData({ ...input, audience: normalizedAudience });
       report = buildMonthlyReport(enrichedInput);
       final_outputs = buildFinalReportOutputs(report);
-    } else if (!final_outputs) {
-      final_outputs = buildFinalReportOutputs(report);
+    } else {
+      await prepareReportInputAsync({ client: report.client || {}, allowInactiveClient: body.allowInactiveClient === true });
+      if (!final_outputs) {
+        final_outputs = buildFinalReportOutputs(report);
+      }
     }
 
     const buffer = normalizedAudience === "internal"
       ? await buildInternalPdfBuffer(report, final_outputs)
       : await buildClientPdfBuffer(report, final_outputs);
 
-    const fileName = `${escapeFilePart(report.client?.name)}-${escapeFilePart(report.period?.month)}-${normalizedAudience === "internal" ? "interno-cleanify" : "cliente"}-v7.pdf`;
+    const fileName = `${escapeFilePart(report.client?.name)}-${escapeFilePart(report.period?.month)}-${normalizedAudience === "internal" ? "interno-cleanify" : "cliente"}-v8.pdf`;
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
-    res.setHeader("X-Cleanify-Template-Id", normalizedAudience === "internal" ? "internal_v7" : "client_v7");
-    res.setHeader("X-Cleanify-Renderer", "locked-pdfkit-v7");
+    res.setHeader("X-Cleanify-Template-Id", normalizedAudience === "internal" ? "internal_v8" : "client_v8");
+    res.setHeader("X-Cleanify-Renderer", "conditional-pdfkit-v8");
     return res.send(buffer);
   } catch (error) {
-    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error en render oficial Cleanify v7.", details: error.message });
+    return res.status(error.statusCode || 500).json({ ok: false, version: APP_VERSION, code: error.code || null, error: "Error en render oficial Cleanify v8.", details: error.message });
   }
 });
 
@@ -4072,7 +4102,7 @@ app.post("/api/report/monthly/package", async (req, res) => {
     const packageResult = await buildReportPackage(req.body || {});
     return res.json(packageResult);
   } catch (error) {
-    return res.status(500).json({ ok: false, version: APP_VERSION, error: "Error generando paquete de informes.", details: error.message });
+    return res.status(error.statusCode || 500).json({ ok: false, version: APP_VERSION, code: error.code || null, error: "Error generando paquete de informes.", details: error.message });
   }
 });
 
@@ -4099,7 +4129,7 @@ app.post("/api/report/monthly/html", async (req, res) => {
 
     return res.type("html").send(final_outputs.client_report_html);
   } catch (error) {
-    return res.status(500).type("html").send(`
+    return res.status(error.statusCode || 500).type("html").send(`
       <html>
         <body style="font-family: Arial, sans-serif; padding: 32px;">
           <h1>Error generando el informe mensual</h1>
@@ -4128,7 +4158,7 @@ app.post("/api/report/monthly", async (req, res) => {
     const final_outputs = buildFinalReportOutputs(report);
 
     return res.json({
-      route_version: "api-report-monthly-pdf-package-2026-05-26",
+      route_version: "api-report-monthly-v2-2026-07-14",
       version: APP_VERSION,
       enrichment_input_received: {
         has_ga4: Boolean(data.ga4),
@@ -4146,10 +4176,11 @@ app.post("/api/report/monthly", async (req, res) => {
       report
     });
   } catch (error) {
-    return res.status(500).json({
-      route_version: "api-report-monthly-pdf-package-2026-05-26",
+    return res.status(error.statusCode || 500).json({
+      route_version: "api-report-monthly-v2-2026-07-14",
       version: APP_VERSION,
       ok: false,
+      code: error.code || null,
       error: "Error generando el informe mensual.",
       details: error.message
     });
@@ -4448,8 +4479,10 @@ app.get("/openapi.json", (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+if (process.env.NODE_ENV !== "test") app.listen(PORT, () => {
   console.log(`Cleanify Reporting Agent escuchando en puerto ${PORT}`);
   console.log(`MCP endpoint disponible en ${BASE_URL}/mcp`);
   console.log(`Versión desplegada: ${APP_VERSION}`);
 });
+
+export { app, prepareReportInputAsync, getKnownClientDirectory };
